@@ -16,15 +16,11 @@ type PasswordHasher interface {
 }
 
 // KeyGenerator — генератор ключевых пар WireGuard (curve25519).
+//
+// Phase 4: используется ТОЛЬКО для серверной части (server.PublicKey),
+// peer-keypair генерится на стороне клиента.
 type KeyGenerator interface {
 	NewKeyPair() (privateKey, publicKey string, err error)
-	NewPresharedKey() (string, error)
-}
-
-// SecretBox — симметричное шифрование приватных ключей peer'ов.
-type SecretBox interface {
-	Seal(plaintext []byte) ([]byte, error)
-	Open(ciphertext []byte) ([]byte, error)
 }
 
 // TokenIssuer — JWT.
@@ -45,4 +41,9 @@ type AgentTransport interface {
 	ApplyPeer(ctx context.Context, server *domain.Server, peer *domain.Peer) error
 	RevokePeer(ctx context.Context, server *domain.Server, peerID uuid.UUID) error
 	Health(ctx context.Context, server *domain.Server) error
+}
+
+// MTLSIssuer — выпуск client-сертификатов для агентов под общий CA.
+type MTLSIssuer interface {
+	IssueAgentCert(serverID uuid.UUID) (caPEM, certPEM, keyPEM []byte, fingerprint string, err error)
 }

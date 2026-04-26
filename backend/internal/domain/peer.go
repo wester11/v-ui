@@ -8,14 +8,15 @@ import (
 )
 
 // Peer — клиентское подключение WireGuard.
+//
+// Phase 4: приватный ключ клиента НИКОГДА не покидает устройство пользователя.
+// Сервер хранит только публичный ключ.
 type Peer struct {
 	ID            uuid.UUID
 	UserID        uuid.UUID
 	ServerID      uuid.UUID
 	Name          string
 	PublicKey     string
-	PrivateKeyEnc []byte // AES-GCM зашифрованный приватник
-	PresharedKey  string
 	AssignedIP    netip.Addr
 	AllowedIPs    []netip.Prefix
 	Enabled       bool
@@ -26,13 +27,14 @@ type Peer struct {
 	UpdatedAt     time.Time
 }
 
-func NewPeer(userID, serverID uuid.UUID, name string) *Peer {
+func NewPeer(userID, serverID uuid.UUID, name, publicKey string) *Peer {
 	now := time.Now().UTC()
 	return &Peer{
 		ID:        uuid.New(),
 		UserID:    userID,
 		ServerID:  serverID,
 		Name:      name,
+		PublicKey: publicKey,
 		Enabled:   true,
 		CreatedAt: now,
 		UpdatedAt: now,

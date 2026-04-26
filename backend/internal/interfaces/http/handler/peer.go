@@ -12,10 +12,17 @@ import (
 	mw "github.com/voidwg/control/internal/interfaces/http/middleware"
 )
 
-type PeerHandler struct{ svc *usecase.PeerService }
+type PeerHandler struct {
+	svc   *usecase.PeerService
+	audit *usecase.AuditService
+}
 
-func NewPeer(s *usecase.PeerService) *PeerHandler { return &PeerHandler{svc: s} }
+func NewPeer(s *usecase.PeerService, a *usecase.AuditService) *PeerHandler {
+	return &PeerHandler{svc: s, audit: a}
+}
 
+// Create — операторский endpoint: оператор регистрирует peer'а от имени user'а,
+// клиент уже сгенерил public_key. Приватник остаётся у клиента.
 func (h *PeerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req dto.CreatePeerRequest
 	if err := decode(r, &req); err != nil {
@@ -23,18 +30,29 @@ func (h *PeerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := mw.UserIDFromCtx(r.Context())
-	peer, conf, err := h.svc.Provision(r.Context(), usecase.CreatePeerInput{
-		UserID:   uid,
-		ServerID: req.ServerID,
-		Name:     req.Name,
+	peer, conf, err := h.svc.Create(r.Context(), usecase.CreatePeerInput{
+		UserID:    uid,
+		ServerID:  req.ServerID,
+		Name:      req.Name,
+		PublicKey: req.PublicKey,
 	})
 	if err != nil && peer == nil {
 		writeErr(w, err)
+		h.audit.Log(r.Context(), domain.AuditEvent{
+			ActorID: ptrUUID(uid), Action: "peer.create", Result: "error",
+			IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+			Meta: map[string]any{"err": err.Error()},
+		})
 		return
 	}
+	h.audit.Log(r.Context(), domain.AuditEvent{
+		ActorID: ptrUUID(uid), Action: "peer.create", Result: "ok",
+		TargetType: "peer", TargetID: peer.ID.String(),
+		IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+	})
 	writeJSON(w, http.StatusCreated, dto.CreatePeerResponse{
-		Peer:   dto.PeerFromDomain(peer),
-		Config: conf,
+		Peer:       dto.PeerFromDomain(peer),
+		ConfigStub: conf,
 	})
 }
 
@@ -74,9 +92,17 @@ func (h *PeerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, domain.ErrValidation)
 		return
 	}
+	uid := mw.UserIDFromCtx(r.Context())
 	if err := h.svc.Revoke(r.Context(), id); err != nil {
 		writeErr(w, err)
 		return
 	}
+	h.audit.Log(r.Context(), domain.AuditEvent{
+		ActorID: ptrUUID(uid), Action: "peer.delete", Result: "ok",
+		TargetType: "peer", TargetID: id.String(),
+		IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func ptrUUID(u uuid.UUID) *uuid.UUID { return &u }

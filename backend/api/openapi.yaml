@@ -100,16 +100,86 @@ components:
 
     CreatePeerRequest:
       type: object
-      required: [server_id, name]
+      required: [server_id, name, public_key]
       properties:
-        server_id: { type: string, format: uuid }
-        name:      { type: string }
+        server_id:  { type: string, format: uuid }
+        name:       { type: string }
+        public_key: { type: string, description: "X25519 public key (base64, 44 chars). Приватник остаётся у клиента." }
 
     CreatePeerResponse:
       type: object
       properties:
         peer:   { $ref: '#/components/schemas/Peer' }
-        config: { type: string, description: "Готовый wg-quick .conf" }
+        config: { type: string, description: "wg-quick stub без PrivateKey — клиент подставит свой приватник" }
+
+    AWGParams:
+      type: object
+      properties:
+        Jc:   { type: integer, minimum: 0, maximum: 255 }
+        Jmin: { type: integer }
+        Jmax: { type: integer }
+        S1:   { type: integer }
+        S2:   { type: integer }
+        H1:   { type: integer, format: int64 }
+        H2:   { type: integer, format: int64 }
+        H3:   { type: integer, format: int64 }
+        H4:   { type: integer, format: int64 }
+
+    Invite:
+      type: object
+      properties:
+        id:             { type: string, format: uuid }
+        token:          { type: string }
+        url:            { type: string }
+        server_id:      { type: string, format: uuid }
+        suggested_name: { type: string }
+        expires_at:     { type: string, format: date-time }
+        used_at:        { type: string, format: date-time, nullable: true }
+        peer_id:        { type: string, format: uuid, nullable: true }
+
+    CreateInviteRequest:
+      type: object
+      required: [server_id]
+      properties:
+        server_id:      { type: string, format: uuid }
+        suggested_name: { type: string }
+        ttl_seconds:    { type: integer, default: 86400 }
+
+    InviteLookupResponse:
+      type: object
+      properties:
+        endpoint:     { type: string }
+        public_key:   { type: string }
+        listen_port:  { type: integer }
+        tcp_port:     { type: integer }
+        tls_port:     { type: integer }
+        dns:          { type: array, items: { type: string } }
+        obfs_enabled: { type: boolean }
+        awg:          { $ref: '#/components/schemas/AWGParams' }
+        expires_at:   { type: string, format: date-time }
+        suggested_name: { type: string }
+
+    RedeemInviteRequest:
+      type: object
+      required: [public_key]
+      properties:
+        public_key: { type: string, description: "X25519 public key (base64), сгенерированный клиентом локально" }
+        name:       { type: string }
+
+    AuditEntry:
+      type: object
+      properties:
+        id:          { type: integer, format: int64 }
+        ts:          { type: string, format: date-time }
+        actor_id:    { type: string, format: uuid, nullable: true }
+        actor_email: { type: string }
+        action:      { type: string }
+        target_type: { type: string }
+        target_id:   { type: string }
+        ip:          { type: string }
+        user_agent:  { type: string }
+        result:      { type: string, enum: [ok, denied, error] }
+        meta:        { type: object, additionalProperties: true }
 
     Stats:
       type: object
@@ -333,6 +403,89 @@ paths:
       parameters:
         - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
       responses: { '204': { description: revoked } }
+
+  /api/v1/admin/invites:
+    post:
+      summary: Create one-time invite (operator+)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateInviteRequest' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Invite' }
+    get:
+      summary: List my invites
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Invite' }
+
+  /api/v1/admin/invites/{id}:
+    delete:
+      summary: Revoke invite
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses: { '204': { description: revoked } }
+
+  /api/v1/invites/{token}:
+    get:
+      summary: Lookup invite metadata (no auth — public client-side keygen flow)
+      security: []
+      parameters:
+        - { in: path, name: token, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InviteLookupResponse' }
+        '404': { description: not found or expired }
+
+  /api/v1/invites/{token}/redeem:
+    post:
+      summary: Redeem invite with client-generated public_key
+      security: []
+      parameters:
+        - { in: path, name: token, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RedeemInviteRequest' }
+      responses:
+        '200':
+          description: peer created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreatePeerResponse' }
+
+  /api/v1/audit:
+    get:
+      summary: Audit log (admin only)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: query, name: limit,  schema: { type: integer, default: 100 } }
+        - { in: query, name: before, schema: { type: integer, format: int64, description: "Cursor: id <" } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditEntry' }
 
   /api/v1/peers/{id}/config:
     get:

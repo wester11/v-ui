@@ -11,36 +11,47 @@ import (
 
 	"github.com/voidwg/control/internal/application/port"
 	"github.com/voidwg/control/internal/domain"
+	"github.com/voidwg/control/internal/infrastructure/obfuscation"
 )
 
 type ServerService struct {
-	repo port.ServerRepository
-	keys port.KeyGenerator
+	repo  port.ServerRepository
+	keys  port.KeyGenerator
+	mtls  port.MTLSIssuer
 }
 
-func NewServerService(r port.ServerRepository, k port.KeyGenerator) *ServerService {
-	return &ServerService{repo: r, keys: k}
+func NewServerService(r port.ServerRepository, k port.KeyGenerator, m port.MTLSIssuer) *ServerService {
+	return &ServerService{repo: r, keys: k, mtls: m}
 }
 
 type RegisterServerInput struct {
 	Name        string
 	Endpoint    string
 	ListenPort  uint16
+	TCPPort     uint16
+	TLSPort     uint16
 	Subnet      string
 	DNS         []string
 	ObfsEnabled bool
 }
 
-func (s *ServerService) Register(ctx context.Context, in RegisterServerInput) (*domain.Server, error) {
+// RegisterResult — sensitive material, выдаётся ОДИН РАЗ при создании сервера.
+type RegisterResult struct {
+	Server    *domain.Server
+	AgentCA   []byte
+	AgentCert []byte
+	AgentKey  []byte
+}
+
+func (s *ServerService) Register(ctx context.Context, in RegisterServerInput) (*RegisterResult, error) {
 	prefix, err := netip.ParsePrefix(in.Subnet)
 	if err != nil {
 		return nil, domain.ErrValidation
 	}
-	priv, pub, err := s.keys.NewKeyPair()
+	_, pub, err := s.keys.NewKeyPair()
 	if err != nil {
 		return nil, err
 	}
-	_ = priv // приватник сервера будет передан в агент при первой инициализации (через secure pipe)
 
 	dns := make([]netip.Addr, 0, len(in.DNS))
 	for _, d := range in.DNS {
@@ -53,23 +64,39 @@ func (s *ServerService) Register(ctx context.Context, in RegisterServerInput) (*
 	_, _ = rand.Read(tokenBytes)
 	now := time.Now().UTC()
 
+	srvID := uuid.New()
+
+	caPEM, certPEM, keyPEM, fp, err := s.mtls.IssueAgentCert(srvID)
+	if err != nil {
+		return nil, err
+	}
+
 	srv := &domain.Server{
-		ID:          uuid.New(),
-		Name:        in.Name,
-		Endpoint:    in.Endpoint,
-		PublicKey:   pub,
-		ListenPort:  in.ListenPort,
-		Subnet:      prefix,
-		DNS:         dns,
-		ObfsEnabled: in.ObfsEnabled,
-		AgentToken:  hex.EncodeToString(tokenBytes),
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:                   srvID,
+		Name:                 in.Name,
+		Endpoint:             in.Endpoint,
+		PublicKey:            pub,
+		ListenPort:           in.ListenPort,
+		TCPPort:              in.TCPPort,
+		TLSPort:              in.TLSPort,
+		Subnet:               prefix,
+		DNS:                  dns,
+		ObfsEnabled:          in.ObfsEnabled,
+		AWG:                  obfuscation.RandomParams(),
+		AgentToken:           hex.EncodeToString(tokenBytes),
+		AgentCertFingerprint: fp,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
 	if err := s.repo.Create(ctx, srv); err != nil {
 		return nil, err
 	}
-	return srv, nil
+	return &RegisterResult{
+		Server:    srv,
+		AgentCA:   caPEM,
+		AgentCert: certPEM,
+		AgentKey:  keyPEM,
+	}, nil
 }
 
 func (s *ServerService) Heartbeat(ctx context.Context, token string) (*domain.Server, error) {

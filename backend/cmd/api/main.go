@@ -13,6 +13,7 @@ import (
 	"github.com/voidwg/control/internal/bootstrap"
 	"github.com/voidwg/control/internal/infrastructure/jwtauth"
 	"github.com/voidwg/control/internal/infrastructure/logger"
+	"github.com/voidwg/control/internal/infrastructure/mtls"
 	"github.com/voidwg/control/internal/infrastructure/persistence"
 	"github.com/voidwg/control/internal/infrastructure/transport"
 	"github.com/voidwg/control/internal/infrastructure/wg"
@@ -37,13 +38,15 @@ func main() {
 	userRepo := persistence.NewUserRepo(pool)
 	peerRepo := persistence.NewPeerRepo(pool)
 	srvRepo := persistence.NewServerRepo(pool)
+	invRepo := persistence.NewInviteRepo(pool)
+	auditRepo := persistence.NewAuditRepo(pool)
 
 	keys := wg.New()
 	hasher := jwtauth.NewHasher()
 	tokens := jwtauth.New([]byte(cfg.JWTSecret), "void-wg")
-	box, err := jwtauth.NewSecretBox([]byte(cfg.SecretBoxKey))
+	mtlsIssuer, err := mtls.NewIssuer(cfg.MTLSDir)
 	if err != nil {
-		log.Fatal().Err(err).Msg("secretbox key must be 32 bytes")
+		log.Fatal().Err(err).Msg("mtls issuer init")
 	}
 	agentTransport := transport.NewAgentClient(cfg.AgentInsecureTLS)
 
@@ -52,19 +55,23 @@ func main() {
 	}
 
 	authUC := usecase.NewAuth(userRepo, hasher, tokens)
+	auditUC := usecase.NewAuditService(auditRepo)
 	userUC := usecase.NewUserService(userRepo, hasher)
-	peerUC := usecase.NewPeerService(peerRepo, srvRepo, keys, box, agentTransport)
-	srvUC := usecase.NewServerService(srvRepo, keys)
+	peerUC := usecase.NewPeerService(peerRepo, srvRepo, agentTransport)
+	srvUC := usecase.NewServerService(srvRepo, keys, mtlsIssuer)
+	inviteUC := usecase.NewInviteService(invRepo, peerUC, srvRepo)
 	statsUC := usecase.NewStatsService(userRepo, peerRepo, srvRepo)
 
 	router := netHTTP.NewRouter(netHTTP.Deps{
 		Logger: log,
 		Tokens: tokens,
-		Auth:   handler.NewAuth(authUC, userUC),
-		User:   handler.NewUser(userUC),
-		Peer:   handler.NewPeer(peerUC),
-		Server: handler.NewServer(srvUC),
+		Auth:   handler.NewAuth(authUC, userUC, auditUC),
+		User:   handler.NewUser(userUC, auditUC),
+		Peer:   handler.NewPeer(peerUC, auditUC),
+		Server: handler.NewServer(srvUC, auditUC),
 		Stats:  handler.NewStats(statsUC),
+		Invite: handler.NewInvite(inviteUC, cfg.PublicBaseURL, auditUC),
+		Audit:  handler.NewAudit(auditUC),
 	})
 
 	srv := &http.Server{
@@ -90,9 +97,10 @@ type config struct {
 	HTTPAddr         string
 	DatabaseDSN      string
 	JWTSecret        string
-	SecretBoxKey     string
 	LogLevel         string
 	AgentInsecureTLS bool
+	MTLSDir          string
+	PublicBaseURL    string
 }
 
 func loadConfig() config {
@@ -100,9 +108,11 @@ func loadConfig() config {
 		HTTPAddr:         envOr("HTTP_ADDR", ":8080"),
 		DatabaseDSN:      envOr("DATABASE_DSN", "postgres://voidwg:voidwg@localhost:5432/voidwg?sslmode=disable"),
 		JWTSecret:        envOr("JWT_SECRET", "change-me-please-32-bytes-min!!!"),
-		SecretBoxKey:     envOr("SECRETBOX_KEY", "0123456789abcdef0123456789abcdef"),
 		LogLevel:         envOr("LOG_LEVEL", "info"),
+		// Phase 4: secure-by-default. Включается только явным флагом.
 		AgentInsecureTLS: envOr("AGENT_INSECURE_TLS", "false") == "true",
+		MTLSDir:          envOr("MTLS_DIR", "/var/lib/voidwg/agent-ca"),
+		PublicBaseURL:    envOr("PUBLIC_BASE_URL", ""),
 	}
 }
 

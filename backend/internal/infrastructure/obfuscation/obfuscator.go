@@ -1,109 +1,82 @@
-// Package obfuscation реализует базовую обфускацию UDP-трафика.
+// Package obfuscation предоставляет ГЕНЕРАТОР AmneziaWG-параметров.
 //
-// Стратегии:
-//  - Random padding: каждый пакет получает 0..MaxPad байт случайного «мусора»,
-//    в начало кадра пишется 2-байтовая длина оригинального payload.
-//  - XOR-маска: payload XOR-ится с keystream HKDF(psk, nonce). Не криптографически
-//    стойко (трафик WG уже шифрован), цель — устранить статистические сигнатуры
-//    handshake-пакетов от DPI.
-//  - Decoy noise: периодически инжектится «мусорный» пакет случайного размера,
-//    распознаётся флагом 0x00 в первом байте длины — приёмник его отбрасывает.
-//
-// Эта же логика реализована и в пакете agent/internal/obfs.
+// Phase 4: вся бывшая XOR/HKDF-схема снесена. Реальная обфускация теперь
+// выполняется на уровне самого WireGuard-протокола (форк amneziawg-go) —
+// см. agent/internal/awg. Backend здесь только рандомизирует параметры
+// под каждый сервер, чтобы у разных нод были разные fingerprint'ы.
 package obfuscation
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
-	"errors"
-	mrand "math/rand"
 
-	"golang.org/x/crypto/hkdf"
+	"github.com/voidwg/control/internal/domain"
 )
 
+// Минимально-разумные значения, проверенные на устойчивость к DPI:
+// см. amnezia-vpn/amneziawg-windows-client/issues и обсуждения параметров.
 const (
-	HeaderLen = 2
-	MaxPad    = 96
-	DecoyTag  = byte(0x00) // признак decoy-пакета (длина = 0)
+	defaultJcMin   = 3
+	defaultJcMax   = 10
+	defaultPadMin  = 50
+	defaultPadMax  = 1000
+	defaultSPadMin = 15
+	defaultSPadMax = 150
 )
 
-type Obfuscator struct {
-	key []byte // 32-байтовый секрет, общий для агента и клиента
+// RandomParams — генерирует уникальный набор AWG-параметров.
+//
+// Гарантии:
+//   - Jc ∈ [3..10]
+//   - Jmin < Jmax, оба ∈ [50..1000]
+//   - S1, S2 ∈ [15..150]
+//   - H1..H4 — попарно-различные uint32 в диапазоне [5..2^31), чтобы не пересечься
+//     с реальными значениями WireGuard message_type (1..4 + 0).
+func RandomParams() domain.AWGParams {
+	jc := uint8(defaultJcMin + randInt(defaultJcMax-defaultJcMin))
+
+	jmin := uint16(defaultPadMin + randInt(200))
+	jmax := uint16(int(jmin) + 200 + randInt(defaultPadMax-int(jmin)-200))
+
+	s1 := uint16(defaultSPadMin + randInt(defaultSPadMax-defaultSPadMin))
+	s2 := uint16(defaultSPadMin + randInt(defaultSPadMax-defaultSPadMin))
+
+	hs := uniqueU32x4()
+
+	return domain.AWGParams{
+		Jc: jc, Jmin: jmin, Jmax: jmax,
+		S1: s1, S2: s2,
+		H1: hs[0], H2: hs[1], H3: hs[2], H4: hs[3],
+	}
 }
 
-func New(psk []byte) (*Obfuscator, error) {
-	if len(psk) == 0 {
-		return nil, errors.New("obfuscation: empty psk")
+func randInt(n int) int {
+	if n <= 0 {
+		return 0
 	}
-	r := hkdf.New(sha256.New, psk, nil, []byte("voidwg-obfs/v1"))
-	key := make([]byte, 32)
-	if _, err := r.Read(key); err != nil {
-		return nil, err
-	}
-	return &Obfuscator{key: key}, nil
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return int(binary.BigEndian.Uint32(b[:]) % uint32(n))
 }
 
-// Wrap — маскирует исходящий пакет.
-func (o *Obfuscator) Wrap(payload []byte) []byte {
-	pad := mrand.Intn(MaxPad)
-	out := make([]byte, HeaderLen+len(payload)+pad)
-	binary.BigEndian.PutUint16(out[:HeaderLen], uint16(len(payload)))
-
-	copy(out[HeaderLen:], payload)
-	if pad > 0 {
-		_, _ = rand.Read(out[HeaderLen+len(payload):])
-	}
-	o.xor(out[HeaderLen:], out[:HeaderLen])
-	return out
-}
-
-// Unwrap — снимает маскировку. Возвращает (payload, isDecoy, err).
-func (o *Obfuscator) Unwrap(frame []byte) ([]byte, bool, error) {
-	if len(frame) < HeaderLen {
-		return nil, false, errors.New("frame too short")
-	}
-	nonce := append([]byte(nil), frame[:HeaderLen]...)
-	body := append([]byte(nil), frame[HeaderLen:]...)
-	o.xor(body, nonce)
-
-	plen := int(binary.BigEndian.Uint16(nonce))
-	if plen == 0 {
-		return nil, true, nil // decoy
-	}
-	if plen > len(body) {
-		return nil, false, errors.New("decoded length mismatch")
-	}
-	return body[:plen], false, nil
-}
-
-// MakeDecoy — пакет-обманка (длина=0, тело — случайный шум).
-func (o *Obfuscator) MakeDecoy() []byte {
-	size := 32 + mrand.Intn(MaxPad)
-	out := make([]byte, HeaderLen+size)
-	out[0] = DecoyTag
-	out[1] = DecoyTag
-	_, _ = rand.Read(out[HeaderLen:])
-	o.xor(out[HeaderLen:], out[:HeaderLen])
-	return out
-}
-
-// xor — keystream через HMAC-SHA256(key, nonce || counter).
-func (o *Obfuscator) xor(buf, nonce []byte) {
-	h := hmac.New(sha256.New, o.key)
-	var ctr uint32
-	var block []byte
-	for i := range buf {
-		if i%32 == 0 {
-			h.Reset()
-			h.Write(nonce)
-			var c [4]byte
-			binary.BigEndian.PutUint32(c[:], ctr)
-			h.Write(c[:])
-			block = h.Sum(nil)
-			ctr++
+func uniqueU32x4() [4]uint32 {
+	var out [4]uint32
+	seen := map[uint32]bool{0: true, 1: true, 2: true, 3: true, 4: true}
+	for i := 0; i < 4; i++ {
+		for {
+			var b [4]byte
+			_, _ = rand.Read(b[:])
+			v := binary.BigEndian.Uint32(b[:]) | (1 << 31) // ensure высокий бит = 0 не у всех
+			v &^= 1 << 31                                  // clear, чтоб остаться в [0, 2^31)
+			if v < 5 {
+				continue
+			}
+			if !seen[v] {
+				seen[v] = true
+				out[i] = v
+				break
+			}
 		}
-		buf[i] ^= block[i%32]
 	}
+	return out
 }

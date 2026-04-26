@@ -18,11 +18,10 @@ func NewPeerRepo(db *pgxpool.Pool) *PeerRepo { return &PeerRepo{db: db} }
 
 func (r *PeerRepo) Create(ctx context.Context, p *domain.Peer) error {
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO peers (id,user_id,server_id,name,public_key,private_key_enc,preshared_key,
-		                   assigned_ip,enabled,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		p.ID, p.UserID, p.ServerID, p.Name, p.PublicKey, p.PrivateKeyEnc, p.PresharedKey,
-		p.AssignedIP.String(), p.Enabled, p.CreatedAt, p.UpdatedAt)
+		INSERT INTO peers (id,user_id,server_id,name,public_key,assigned_ip,enabled,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		p.ID, p.UserID, p.ServerID, p.Name, p.PublicKey, p.AssignedIP.String(),
+		p.Enabled, p.CreatedAt, p.UpdatedAt)
 	return err
 }
 
@@ -36,6 +35,11 @@ func (r *PeerRepo) Update(ctx context.Context, p *domain.Peer) error {
 
 func (r *PeerRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Peer, error) {
 	row := r.db.QueryRow(ctx, peerSelect+` WHERE id=$1`, id)
+	return scanPeer(row)
+}
+
+func (r *PeerRepo) GetByPublicKey(ctx context.Context, pubKey string) (*domain.Peer, error) {
+	row := r.db.QueryRow(ctx, peerSelect+` WHERE public_key=$1`, pubKey)
 	return scanPeer(row)
 }
 
@@ -91,7 +95,7 @@ func (r *PeerRepo) UsedIPs(ctx context.Context, serverID uuid.UUID) ([]string, e
 	return ips, rows.Err()
 }
 
-const peerSelect = `SELECT id,user_id,server_id,name,public_key,private_key_enc,preshared_key,
+const peerSelect = `SELECT id,user_id,server_id,name,public_key,
                           assigned_ip,enabled,bytes_rx,bytes_tx,last_handshake,created_at,updated_at FROM peers`
 
 func scanPeers(rows pgx.Rows) ([]*domain.Peer, error) {
@@ -109,8 +113,8 @@ func scanPeers(rows pgx.Rows) ([]*domain.Peer, error) {
 func scanPeer(s scanner) (*domain.Peer, error) {
 	p := &domain.Peer{}
 	var ip string
-	err := s.Scan(&p.ID, &p.UserID, &p.ServerID, &p.Name, &p.PublicKey, &p.PrivateKeyEnc,
-		&p.PresharedKey, &ip, &p.Enabled, &p.BytesRx, &p.BytesTx, &p.LastHandshake, &p.CreatedAt, &p.UpdatedAt)
+	err := s.Scan(&p.ID, &p.UserID, &p.ServerID, &p.Name, &p.PublicKey,
+		&ip, &p.Enabled, &p.BytesRx, &p.BytesTx, &p.LastHandshake, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound

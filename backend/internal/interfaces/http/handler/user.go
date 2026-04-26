@@ -10,11 +10,17 @@ import (
 	"github.com/voidwg/control/internal/application/usecase"
 	"github.com/voidwg/control/internal/domain"
 	"github.com/voidwg/control/internal/interfaces/http/dto"
+	mw "github.com/voidwg/control/internal/interfaces/http/middleware"
 )
 
-type UserHandler struct{ svc *usecase.UserService }
+type UserHandler struct {
+	svc   *usecase.UserService
+	audit *usecase.AuditService
+}
 
-func NewUser(s *usecase.UserService) *UserHandler { return &UserHandler{svc: s} }
+func NewUser(s *usecase.UserService, a *usecase.AuditService) *UserHandler {
+	return &UserHandler{svc: s, audit: a}
+}
 
 func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req dto.CreateUserRequest
@@ -31,6 +37,12 @@ func (h *UserHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	actor := mw.UserIDFromCtx(r.Context())
+	h.audit.Log(r.Context(), domain.AuditEvent{
+		ActorID: ptrUUID(actor), Action: "user.create", Result: "ok",
+		TargetType: "user", TargetID: u.ID.String(),
+		IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+	})
 	writeJSON(w, http.StatusCreated, dto.UserFromDomain(u))
 }
 
@@ -59,5 +71,11 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	actor := mw.UserIDFromCtx(r.Context())
+	h.audit.Log(r.Context(), domain.AuditEvent{
+		ActorID: ptrUUID(actor), Action: "user.delete", Result: "ok",
+		TargetType: "user", TargetID: id.String(),
+		IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }

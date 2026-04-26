@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/voidwg/control/internal/application/usecase"
+	"github.com/voidwg/control/internal/domain"
 	"github.com/voidwg/control/internal/interfaces/http/dto"
 	mw "github.com/voidwg/control/internal/interfaces/http/middleware"
 )
@@ -11,10 +12,11 @@ import (
 type AuthHandler struct {
 	auth  *usecase.Auth
 	users *usecase.UserService
+	audit *usecase.AuditService
 }
 
-func NewAuth(a *usecase.Auth, u *usecase.UserService) *AuthHandler {
-	return &AuthHandler{auth: a, users: u}
+func NewAuth(a *usecase.Auth, u *usecase.UserService, audit *usecase.AuditService) *AuthHandler {
+	return &AuthHandler{auth: a, users: u, audit: audit}
 }
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
@@ -23,11 +25,21 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	pair, _, err := h.auth.Login(r.Context(), usecase.LoginInput{Email: req.Email, Password: req.Password})
+	pair, user, err := h.auth.Login(r.Context(), usecase.LoginInput{Email: req.Email, Password: req.Password})
 	if err != nil {
+		h.audit.Log(r.Context(), domain.AuditEvent{
+			Action: "auth.login", Result: "denied",
+			ActorEmail: req.Email,
+			IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+		})
 		writeErr(w, err)
 		return
 	}
+	h.audit.Log(r.Context(), domain.AuditEvent{
+		Action: "auth.login", Result: "ok",
+		ActorID: ptrUUID(user.ID), ActorEmail: user.Email,
+		IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+	})
 	writeJSON(w, http.StatusOK, dto.TokenResponse{
 		AccessToken:  pair.AccessToken,
 		RefreshToken: pair.RefreshToken,
@@ -73,8 +85,16 @@ func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.auth.ChangePassword(r.Context(), uid, req.OldPassword, req.NewPassword); err != nil {
+		h.audit.Log(r.Context(), domain.AuditEvent{
+			ActorID: ptrUUID(uid), Action: "auth.change_password", Result: "denied",
+			IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+		})
 		writeErr(w, err)
 		return
 	}
+	h.audit.Log(r.Context(), domain.AuditEvent{
+		ActorID: ptrUUID(uid), Action: "auth.change_password", Result: "ok",
+		IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }

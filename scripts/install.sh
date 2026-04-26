@@ -140,13 +140,12 @@ ensure_env_file() {
     fi
     log "Generating .env with fresh secrets..."
     JWT_SECRET="$(openssl rand -hex 32)"
-    SECRETBOX_KEY="$(openssl rand -hex 16)"
-    OBFS_PSK="$(openssl rand -hex 32)"
     BOOTSTRAP_ADMIN_PASSWORD="$(random_pass)"
+    # Phase 4: SECRETBOX_KEY больше не нужен — приватники peer'ов не хранятся.
+    # OBFS_PSK тоже снесён — обфускация теперь параметризованная (AWG-params),
+    # параметры выдаются control-plane'ом per-server и шифруются TLS'ом.
     cat > "$env_file" <<EOF
 JWT_SECRET=$JWT_SECRET
-SECRETBOX_KEY=$SECRETBOX_KEY
-OBFS_PSK=$OBFS_PSK
 BOOTSTRAP_ADMIN_EMAIL=$ADMIN_EMAIL
 BOOTSTRAP_ADMIN_PASSWORD=$BOOTSTRAP_ADMIN_PASSWORD
 PANEL_HTTP_PORT=$PANEL_HTTP_PORT
@@ -154,7 +153,10 @@ PANEL_HTTPS_PORT=$PANEL_HTTPS_PORT
 WG_PORT=$WG_PORT
 OBFS_PORT=$OBFS_PORT
 LOG_LEVEL=info
-AGENT_INSECURE_TLS=true
+# secure-by-default: mTLS обязателен. Включить отладку: AGENT_INSECURE_TLS=true
+AGENT_INSECURE_TLS=false
+MTLS_DIR=/opt/void-wg/runtime/agent-ca
+PUBLIC_BASE_URL=
 EOF
     chmod 600 "$env_file"
     export BOOTSTRAP_ADMIN_PASSWORD ADMIN_EMAIL

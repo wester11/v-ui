@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/netip"
 	"strings"
@@ -18,28 +19,35 @@ type ServerRepo struct{ db *pgxpool.Pool }
 func NewServerRepo(db *pgxpool.Pool) *ServerRepo { return &ServerRepo{db: db} }
 
 func (r *ServerRepo) Create(ctx context.Context, s *domain.Server) error {
-	dns := make([]string, 0, len(s.DNS))
-	for _, a := range s.DNS {
-		dns = append(dns, a.String())
+	dns := dnsJoin(s.DNS)
+	awg, err := json.Marshal(s.AWG)
+	if err != nil {
+		return err
 	}
-	_, err := r.db.Exec(ctx, `
-		INSERT INTO servers (id,name,endpoint,public_key,listen_port,subnet,dns,obfs_enabled,agent_token,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		s.ID, s.Name, s.Endpoint, s.PublicKey, int(s.ListenPort), s.Subnet.String(),
-		strings.Join(dns, ","), s.ObfsEnabled, s.AgentToken, s.CreatedAt, s.UpdatedAt)
+	_, err = r.db.Exec(ctx, `
+		INSERT INTO servers
+		    (id,name,endpoint,public_key,listen_port,tcp_port,tls_port,subnet,dns,
+		     obfs_enabled,awg_params,agent_token,agent_cert_fingerprint,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+		s.ID, s.Name, s.Endpoint, s.PublicKey, int(s.ListenPort), int(s.TCPPort), int(s.TLSPort),
+		s.Subnet.String(), dns, s.ObfsEnabled, awg, s.AgentToken, s.AgentCertFingerprint,
+		s.CreatedAt, s.UpdatedAt)
 	return err
 }
 
 func (r *ServerRepo) Update(ctx context.Context, s *domain.Server) error {
-	dns := make([]string, 0, len(s.DNS))
-	for _, a := range s.DNS {
-		dns = append(dns, a.String())
+	dns := dnsJoin(s.DNS)
+	awg, err := json.Marshal(s.AWG)
+	if err != nil {
+		return err
 	}
-	_, err := r.db.Exec(ctx, `
-		UPDATE servers SET name=$2,endpoint=$3,listen_port=$4,subnet=$5,dns=$6,obfs_enabled=$7,
-		                  online=$8,last_heartbeat=$9,updated_at=NOW() WHERE id=$1`,
-		s.ID, s.Name, s.Endpoint, int(s.ListenPort), s.Subnet.String(),
-		strings.Join(dns, ","), s.ObfsEnabled, s.Online, s.LastHeartbeat)
+	_, err = r.db.Exec(ctx, `
+		UPDATE servers SET name=$2,endpoint=$3,listen_port=$4,tcp_port=$5,tls_port=$6,
+		                  subnet=$7,dns=$8,obfs_enabled=$9,awg_params=$10,
+		                  online=$11,last_heartbeat=$12,updated_at=NOW()
+		WHERE id=$1`,
+		s.ID, s.Name, s.Endpoint, int(s.ListenPort), int(s.TCPPort), int(s.TLSPort),
+		s.Subnet.String(), dns, s.ObfsEnabled, awg, s.Online, s.LastHeartbeat)
 	return err
 }
 
@@ -83,15 +91,21 @@ func (r *ServerRepo) CountOnline(ctx context.Context) (int, int, error) {
 	return total, online, err
 }
 
-const serverSelect = `SELECT id,name,endpoint,public_key,listen_port,subnet,dns,obfs_enabled,
-                            agent_token,online,last_heartbeat,created_at,updated_at FROM servers`
+const serverSelect = `SELECT id,name,endpoint,public_key,listen_port,tcp_port,tls_port,
+                            subnet,dns,obfs_enabled,awg_params,
+                            agent_token,agent_cert_fingerprint,
+                            online,last_heartbeat,created_at,updated_at FROM servers`
 
 func scanServer(s scanner) (*domain.Server, error) {
 	srv := &domain.Server{}
 	var subnet, dns string
-	var lp int
-	err := s.Scan(&srv.ID, &srv.Name, &srv.Endpoint, &srv.PublicKey, &lp, &subnet, &dns,
-		&srv.ObfsEnabled, &srv.AgentToken, &srv.Online, &srv.LastHeartbeat, &srv.CreatedAt, &srv.UpdatedAt)
+	var lp, tcpp, tlsp int
+	var awg []byte
+	err := s.Scan(&srv.ID, &srv.Name, &srv.Endpoint, &srv.PublicKey,
+		&lp, &tcpp, &tlsp,
+		&subnet, &dns, &srv.ObfsEnabled, &awg,
+		&srv.AgentToken, &srv.AgentCertFingerprint,
+		&srv.Online, &srv.LastHeartbeat, &srv.CreatedAt, &srv.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
@@ -99,8 +113,9 @@ func scanServer(s scanner) (*domain.Server, error) {
 		return nil, err
 	}
 	srv.ListenPort = uint16(lp)
-	pfx, err := netip.ParsePrefix(subnet)
-	if err == nil {
+	srv.TCPPort = uint16(tcpp)
+	srv.TLSPort = uint16(tlsp)
+	if pfx, err := netip.ParsePrefix(subnet); err == nil {
 		srv.Subnet = pfx
 	}
 	if dns != "" {
@@ -110,5 +125,16 @@ func scanServer(s scanner) (*domain.Server, error) {
 			}
 		}
 	}
+	if len(awg) > 0 {
+		_ = json.Unmarshal(awg, &srv.AWG)
+	}
 	return srv, nil
+}
+
+func dnsJoin(addrs []netip.Addr) string {
+	out := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, a.String())
+	}
+	return strings.Join(out, ",")
 }

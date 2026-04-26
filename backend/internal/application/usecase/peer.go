@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"net/netip"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -11,48 +12,38 @@ import (
 	"github.com/voidwg/control/pkg/wireguard"
 )
 
+// PeerService — управление peer'ами БЕЗ хранения приватных ключей.
 type PeerService struct {
 	peers   port.PeerRepository
 	servers port.ServerRepository
-	keys    port.KeyGenerator
-	box     port.SecretBox
 	agents  port.AgentTransport
 }
 
-func NewPeerService(
-	p port.PeerRepository,
-	s port.ServerRepository,
-	k port.KeyGenerator,
-	b port.SecretBox,
-	a port.AgentTransport,
-) *PeerService {
-	return &PeerService{peers: p, servers: s, keys: k, box: b, agents: a}
+func NewPeerService(p port.PeerRepository, s port.ServerRepository, a port.AgentTransport) *PeerService {
+	return &PeerService{peers: p, servers: s, agents: a}
 }
 
 type CreatePeerInput struct {
-	UserID   uuid.UUID
-	ServerID uuid.UUID
-	Name     string
+	UserID    uuid.UUID
+	ServerID  uuid.UUID
+	Name      string
+	PublicKey string // WireGuard X25519 public key (base64), генерится на клиенте
 }
 
-// Provision — создаёт нового peer'а: генерирует ключи, выделяет IP, толкает на агент.
-func (s *PeerService) Provision(ctx context.Context, in CreatePeerInput) (*domain.Peer, string, error) {
+// Create — добавляет peer'а с public_key, полученным от клиента.
+// Сервер выделяет IP, пушит конфиг агенту, рендерит [Interface]-stub
+// БЕЗ PrivateKey (клиент сам подставит свой приватник в конфиг).
+func (s *PeerService) Create(ctx context.Context, in CreatePeerInput) (*domain.Peer, string, error) {
+	pub := strings.TrimSpace(in.PublicKey)
+	if !validBase64Key(pub) {
+		return nil, "", domain.ErrInvalidInput
+	}
 	srv, err := s.servers.GetByID(ctx, in.ServerID)
 	if err != nil {
 		return nil, "", err
 	}
-
-	priv, pub, err := s.keys.NewKeyPair()
-	if err != nil {
-		return nil, "", err
-	}
-	psk, err := s.keys.NewPresharedKey()
-	if err != nil {
-		return nil, "", err
-	}
-	encPriv, err := s.box.Seal([]byte(priv))
-	if err != nil {
-		return nil, "", err
+	if existing, _ := s.peers.GetByPublicKey(ctx, pub); existing != nil {
+		return nil, "", domain.ErrAlreadyExists
 	}
 
 	ip, err := s.allocateIP(ctx, srv)
@@ -60,22 +51,18 @@ func (s *PeerService) Provision(ctx context.Context, in CreatePeerInput) (*domai
 		return nil, "", err
 	}
 
-	peer := domain.NewPeer(in.UserID, in.ServerID, in.Name)
-	peer.PublicKey = pub
-	peer.PrivateKeyEnc = encPriv
-	peer.PresharedKey = psk
+	peer := domain.NewPeer(in.UserID, in.ServerID, in.Name, pub)
 	peer.AssignedIP = ip
 	peer.AllowedIPs = []netip.Prefix{netip.PrefixFrom(ip, 32)}
 
 	if err := s.peers.Create(ctx, peer); err != nil {
 		return nil, "", err
 	}
-
 	if err := s.agents.ApplyPeer(ctx, srv, peer); err != nil {
 		// мягкая ошибка: peer создан, но не применён — оператор увидит в UI
-		return peer, wireguard.RenderClientConfig(peer, srv, priv), err
+		return peer, wireguard.RenderClientConfigStub(peer, srv), err
 	}
-	return peer, wireguard.RenderClientConfig(peer, srv, priv), nil
+	return peer, wireguard.RenderClientConfigStub(peer, srv), nil
 }
 
 func (s *PeerService) Revoke(ctx context.Context, peerID uuid.UUID) error {
@@ -97,8 +84,8 @@ func (s *PeerService) ListByUser(ctx context.Context, userID uuid.UUID) ([]*doma
 	return s.peers.ListByUser(ctx, userID)
 }
 
-// Config — повторно отрендерить .conf (без приватного ключа в незашифрованном виде в БД мы
-// должны расшифровать только по запросу владельца).
+// Config — повторно отрендерить конфиг-stub (без PrivateKey).
+// Клиент должен сам подставить свой приватник, который есть только у него.
 func (s *PeerService) Config(ctx context.Context, peerID uuid.UUID) (string, error) {
 	p, err := s.peers.GetByID(ctx, peerID)
 	if err != nil {
@@ -108,14 +95,9 @@ func (s *PeerService) Config(ctx context.Context, peerID uuid.UUID) (string, err
 	if err != nil {
 		return "", err
 	}
-	priv, err := s.box.Open(p.PrivateKeyEnc)
-	if err != nil {
-		return "", err
-	}
-	return wireguard.RenderClientConfig(p, srv, string(priv)), nil
+	return wireguard.RenderClientConfigStub(p, srv), nil
 }
 
-// allocateIP — линейный алгоритм выбора первого свободного IP в подсети.
 func (s *PeerService) allocateIP(ctx context.Context, srv *domain.Server) (netip.Addr, error) {
 	used, err := s.peers.UsedIPs(ctx, srv.ID)
 	if err != nil {
@@ -125,10 +107,8 @@ func (s *PeerService) allocateIP(ctx context.Context, srv *domain.Server) (netip
 	for _, ip := range used {
 		usedSet[ip] = struct{}{}
 	}
-	// .1 зарезервирован за самим сервером
 	usedSet[srv.Subnet.Addr().Next().String()] = struct{}{}
-
-	addr := srv.Subnet.Addr().Next().Next() // начинаем с .2
+	addr := srv.Subnet.Addr().Next().Next()
 	for srv.Subnet.Contains(addr) {
 		if _, taken := usedSet[addr.String()]; !taken {
 			return addr, nil
@@ -136,4 +116,25 @@ func (s *PeerService) allocateIP(ctx context.Context, srv *domain.Server) (netip
 		addr = addr.Next()
 	}
 	return netip.Addr{}, domain.ErrPoolExhausted
+}
+
+// validBase64Key — поверхностная проверка X25519 public key в base64.
+func validBase64Key(k string) bool {
+	if len(k) != 44 {
+		return false
+	}
+	if !strings.HasSuffix(k, "=") {
+		return false
+	}
+	for _, c := range k {
+		switch {
+		case c >= 'A' && c <= 'Z':
+		case c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9':
+		case c == '+' || c == '/' || c == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }

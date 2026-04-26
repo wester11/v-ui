@@ -71,16 +71,31 @@ type CreateUserRequest struct {
 
 // ===== Server =====
 
+type AWGParamsDTO struct {
+	Jc   uint8  `json:"Jc"`
+	Jmin uint16 `json:"Jmin"`
+	Jmax uint16 `json:"Jmax"`
+	S1   uint16 `json:"S1"`
+	S2   uint16 `json:"S2"`
+	H1   uint32 `json:"H1"`
+	H2   uint32 `json:"H2"`
+	H3   uint32 `json:"H3"`
+	H4   uint32 `json:"H4"`
+}
+
 type ServerResponse struct {
-	ID            uuid.UUID  `json:"id"`
-	Name          string     `json:"name"`
-	Endpoint      string     `json:"endpoint"`
-	PublicKey     string     `json:"public_key"`
-	ListenPort    uint16     `json:"listen_port"`
-	Subnet        string     `json:"subnet"`
-	ObfsEnabled   bool       `json:"obfs_enabled"`
-	Online        bool       `json:"online"`
-	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
+	ID            uuid.UUID    `json:"id"`
+	Name          string       `json:"name"`
+	Endpoint      string       `json:"endpoint"`
+	PublicKey     string       `json:"public_key"`
+	ListenPort    uint16       `json:"listen_port"`
+	TCPPort       uint16       `json:"tcp_port,omitempty"`
+	TLSPort       uint16       `json:"tls_port,omitempty"`
+	Subnet        string       `json:"subnet"`
+	ObfsEnabled   bool         `json:"obfs_enabled"`
+	AWG           AWGParamsDTO `json:"awg,omitempty"`
+	Online        bool         `json:"online"`
+	LastHeartbeat *time.Time   `json:"last_heartbeat,omitempty"`
 }
 
 func ServerFromDomain(s *domain.Server) ServerResponse {
@@ -90,8 +105,15 @@ func ServerFromDomain(s *domain.Server) ServerResponse {
 		Endpoint:      s.Endpoint,
 		PublicKey:     s.PublicKey,
 		ListenPort:    s.ListenPort,
+		TCPPort:       s.TCPPort,
+		TLSPort:       s.TLSPort,
 		Subnet:        s.Subnet.String(),
 		ObfsEnabled:   s.ObfsEnabled,
+		AWG: AWGParamsDTO{
+			Jc: s.AWG.Jc, Jmin: s.AWG.Jmin, Jmax: s.AWG.Jmax,
+			S1: s.AWG.S1, S2: s.AWG.S2,
+			H1: s.AWG.H1, H2: s.AWG.H2, H3: s.AWG.H3, H4: s.AWG.H4,
+		},
 		Online:        s.Online,
 		LastHeartbeat: s.LastHeartbeat,
 	}
@@ -101,9 +123,21 @@ type CreateServerRequest struct {
 	Name        string   `json:"name"`
 	Endpoint    string   `json:"endpoint"`
 	ListenPort  uint16   `json:"listen_port"`
+	TCPPort     uint16   `json:"tcp_port"`
+	TLSPort     uint16   `json:"tls_port"`
 	Subnet      string   `json:"subnet"`
 	DNS         []string `json:"dns"`
 	ObfsEnabled bool     `json:"obfs_enabled"`
+}
+
+// CreateServerResponse — отдаётся ОДИН РАЗ при регистрации:
+// agent_token + mTLS-материал. После этого CA/cert/key больше не получить.
+type CreateServerResponse struct {
+	ServerResponse
+	AgentToken string `json:"agent_token"`
+	AgentCA    string `json:"agent_ca"`   // PEM, ставится в trusted store агента
+	AgentCert  string `json:"agent_cert"` // PEM, mTLS client cert
+	AgentKey   string `json:"agent_key"`  // PEM, приватник client cert
 }
 
 // ===== Peer =====
@@ -138,14 +172,102 @@ func PeerFromDomain(p *domain.Peer) PeerResponse {
 	}
 }
 
+// CreatePeerRequest — публичный endpoint (operator+) принимает уже сгенерированный
+// клиентом public_key. Приватник остаётся только у клиента.
 type CreatePeerRequest struct {
-	ServerID uuid.UUID `json:"server_id"`
-	Name     string    `json:"name"`
+	ServerID  uuid.UUID `json:"server_id"`
+	Name      string    `json:"name"`
+	PublicKey string    `json:"public_key"`
 }
 
 type CreatePeerResponse struct {
-	Peer   PeerResponse `json:"peer"`
-	Config string       `json:"config"` // wg-quick .conf
+	Peer       PeerResponse `json:"peer"`
+	ConfigStub string       `json:"config"` // wg-quick stub (без PrivateKey — клиент подставит сам)
+}
+
+// ===== Invite =====
+
+type CreateInviteRequest struct {
+	ServerID      uuid.UUID `json:"server_id"`
+	SuggestedName string    `json:"suggested_name"`
+	TTLSeconds    int64     `json:"ttl_seconds"`
+}
+
+type InviteResponse struct {
+	ID            uuid.UUID  `json:"id"`
+	Token         string     `json:"token"`
+	URL           string     `json:"url"` // /redeem/<token>
+	ServerID      uuid.UUID  `json:"server_id"`
+	SuggestedName string     `json:"suggested_name"`
+	ExpiresAt     time.Time  `json:"expires_at"`
+	UsedAt        *time.Time `json:"used_at,omitempty"`
+	PeerID        *uuid.UUID `json:"peer_id,omitempty"`
+}
+
+func InviteFromDomain(i *domain.Invite, baseURL string) InviteResponse {
+	return InviteResponse{
+		ID:            i.ID,
+		Token:         i.Token,
+		URL:           baseURL + "/redeem/" + i.Token,
+		ServerID:      i.ServerID,
+		SuggestedName: i.SuggestedName,
+		ExpiresAt:     i.ExpiresAt,
+		UsedAt:        i.UsedAt,
+		PeerID:        i.PeerID,
+	}
+}
+
+// InviteLookupResponse — публичный (без auth) ответ на GET /api/v1/invites/<token>.
+// Содержит метаданные сервера, нужные клиенту для генерации конфига.
+// public_key самого peer'а ещё не известен — клиент сгенерит и пришлёт через Redeem.
+type InviteLookupResponse struct {
+	Endpoint    string       `json:"endpoint"`
+	PublicKey   string       `json:"public_key"`
+	ListenPort  uint16       `json:"listen_port"`
+	TCPPort     uint16       `json:"tcp_port,omitempty"`
+	TLSPort     uint16       `json:"tls_port,omitempty"`
+	DNS         []string     `json:"dns"`
+	ObfsEnabled bool         `json:"obfs_enabled"`
+	AWG         AWGParamsDTO `json:"awg,omitempty"`
+	ExpiresAt   time.Time    `json:"expires_at"`
+	Suggested   string       `json:"suggested_name"`
+}
+
+type RedeemInviteRequest struct {
+	PublicKey string `json:"public_key"`
+	Name      string `json:"name"`
+}
+
+// ===== Audit =====
+
+type AuditEntry struct {
+	ID         int64          `json:"id"`
+	TS         time.Time      `json:"ts"`
+	ActorID    *uuid.UUID     `json:"actor_id,omitempty"`
+	ActorEmail string         `json:"actor_email,omitempty"`
+	Action     string         `json:"action"`
+	TargetType string         `json:"target_type,omitempty"`
+	TargetID   string         `json:"target_id,omitempty"`
+	IP         string         `json:"ip,omitempty"`
+	UserAgent  string         `json:"user_agent,omitempty"`
+	Result     string         `json:"result"`
+	Meta       map[string]any `json:"meta,omitempty"`
+}
+
+func AuditFromDomain(e *domain.AuditEvent) AuditEntry {
+	return AuditEntry{
+		ID:         e.ID,
+		TS:         e.TS,
+		ActorID:    e.ActorID,
+		ActorEmail: e.ActorEmail,
+		Action:     e.Action,
+		TargetType: e.TargetType,
+		TargetID:   e.TargetID,
+		IP:         e.IP,
+		UserAgent:  e.UserAgent,
+		Result:     e.Result,
+		Meta:       e.Meta,
+	}
 }
 
 // ===== Errors =====

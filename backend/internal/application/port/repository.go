@@ -28,6 +28,7 @@ type PeerRepository interface {
 	ListByServer(ctx context.Context, serverID uuid.UUID) ([]*domain.Peer, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	UsedIPs(ctx context.Context, serverID uuid.UUID) ([]string, error)
+	GetByPublicKey(ctx context.Context, pubKey string) (*domain.Peer, error)
 	Count(ctx context.Context) (int, error)
 	TotalTraffic(ctx context.Context) (rx uint64, tx uint64, err error)
 }
@@ -41,4 +42,20 @@ type ServerRepository interface {
 	List(ctx context.Context) ([]*domain.Server, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	CountOnline(ctx context.Context) (total int, online int, err error)
+}
+
+// InviteRepository — одноразовые инвайты для client-side keygen.
+type InviteRepository interface {
+	Create(ctx context.Context, inv *domain.Invite) error
+	GetByToken(ctx context.Context, token string) (*domain.Invite, error)
+	MarkUsed(ctx context.Context, id uuid.UUID, peerID uuid.UUID) error
+	ListByUser(ctx context.Context, userID uuid.UUID) ([]*domain.Invite, error)
+	Delete(ctx context.Context, id uuid.UUID) error
+	DeleteExpired(ctx context.Context) (int, error)
+}
+
+// AuditRepository — журнал событий.
+type AuditRepository interface {
+	Append(ctx context.Context, ev *domain.AuditEvent) error
+	List(ctx context.Context, limit int, before int64) ([]*domain.AuditEvent, error)
 }
