@@ -342,9 +342,11 @@ paths:
           description: ok
           content:
             application/json:
-              schema: { type: array, items: { $ref: '#/components/schemas/Server' } }
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Server' }
     post:
-      summary: Register server
+      summary: Register server (operator+)
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -353,7 +355,7 @@ paths:
             schema: { $ref: '#/components/schemas/CreateServerRequest' }
       responses:
         '201':
-          description: created
+          description: created (returns one-time agent_token + mTLS bundle)
           content:
             application/json:
               schema:
@@ -361,7 +363,10 @@ paths:
                   - $ref: '#/components/schemas/Server'
                   - type: object
                     properties:
-                      agent_token: { type: string, description: "Сохранить — больше не отдаётся" }
+                      agent_token: { type: string }
+                      agent_ca:    { type: string, description: "PEM CA для проверки control-plane" }
+                      agent_cert:  { type: string, description: "PEM client cert (mTLS)" }
+                      agent_key:   { type: string, description: "PEM client key (mTLS)" }
 
   /api/v1/servers/{id}:
     delete:
@@ -380,9 +385,11 @@ paths:
           description: ok
           content:
             application/json:
-              schema: { type: array, items: { $ref: '#/components/schemas/Peer' } }
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Peer' }
     post:
-      summary: Create peer (provision)
+      summary: Register peer with client-generated public_key
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -403,6 +410,30 @@ paths:
       parameters:
         - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
       responses: { '204': { description: revoked } }
+
+  /api/v1/peers/{id}/config:
+    get:
+      summary: Download wg-quick stub (без PrivateKey)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: ok
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/v1/agent/heartbeat:
+    post:
+      summary: Agent heartbeat (token + mTLS)
+      security: [{ agentToken: [] }]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Server' }
 
   /api/v1/admin/invites:
     post:
@@ -427,9 +458,7 @@ paths:
           description: ok
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Invite' }
+              schema: { type: array, items: { $ref: '#/components/schemas/Invite' } }
 
   /api/v1/admin/invites/{id}:
     delete:
@@ -441,7 +470,7 @@ paths:
 
   /api/v1/invites/{token}:
     get:
-      summary: Lookup invite metadata (no auth — public client-side keygen flow)
+      summary: Public invite lookup (no auth)
       security: []
       parameters:
         - { in: path, name: token, required: true, schema: { type: string } }
@@ -451,7 +480,6 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/InviteLookupResponse' }
-        '404': { description: not found or expired }
 
   /api/v1/invites/{token}/redeem:
     post:
@@ -477,39 +505,13 @@ paths:
       security: [{ bearerAuth: [] }]
       parameters:
         - { in: query, name: limit,  schema: { type: integer, default: 100 } }
-        - { in: query, name: before, schema: { type: integer, format: int64, description: "Cursor: id <" } }
+        - { in: query, name: before, schema: { type: integer, format: int64 } }
       responses:
         '200':
           description: ok
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/AuditEntry' }
-
-  /api/v1/peers/{id}/config:
-    get:
-      summary: Download wg-quick .conf
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - { in: path, name: id, required: true, schema: { type: string, format: uuid } }
-      responses:
-        '200':
-          description: ok
-          content:
-            text/plain:
-              schema: { type: string }
-
-  /api/v1/agent/heartbeat:
-    post:
-      summary: Agent heartbeat (token-only)
-      security: [{ agentToken: [] }]
-      responses:
-        '200':
-          description: ok
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Server' }
+              schema: { type: array, items: { $ref: '#/components/schemas/AuditEntry' } }
 
 security:
   - bearerAuth: []
