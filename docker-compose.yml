@@ -10,6 +10,7 @@ services:
       - pgdata:/var/lib/postgresql/data
       - ./backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
       - ./backend/migrations/002_phase4.sql:/docker-entrypoint-initdb.d/002_phase4.sql:ro
+      - ./backend/migrations/003_phase5.sql:/docker-entrypoint-initdb.d/003_phase5.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U voidwg"]
       interval: 5s
@@ -50,6 +51,8 @@ services:
       - ./runtime/tls:/etc/nginx/tls:ro
       - ./runtime/acme-www:/var/www/acme
 
+  # ===== Agent (WG / AmneziaWG) =====
+  # Включить:  docker compose --profile agent up -d agent-1
   agent-1:
     build: ./agent
     profiles: ["agent"]
@@ -57,16 +60,16 @@ services:
     cap_add:
       - NET_ADMIN
     environment:
-      CONTROL_URL:        "${CONTROL_URL:-http://api:8080}"
-      AGENT_TOKEN:        "${AGENT_1_TOKEN:-}"
-      CONTROL_CA:         "${CONTROL_CA:-}"
-      CONTROL_CERT:       "${CONTROL_CERT:-}"
-      CONTROL_KEY:        "${CONTROL_KEY:-}"
+      AGENT_PROTOCOL: "${AGENT_PROTOCOL:-amneziawg}"
+      CONTROL_URL:    "${CONTROL_URL:-http://api:8080}"
+      AGENT_TOKEN:    "${AGENT_1_TOKEN:-}"
+      CONTROL_CA:     "${CONTROL_CA:-}"
+      CONTROL_CERT:   "${CONTROL_CERT:-}"
+      CONTROL_KEY:    "${CONTROL_KEY:-}"
       AGENT_INSECURE_TLS: "${AGENT_INSECURE_TLS:-false}"
       WG_IFACE:    "wg0"
       OBFS_LISTEN: ":51821"
       TCP_LISTEN:  "${AGENT_TCP_LISTEN:-}"
-      TLS_LISTEN:  "${AGENT_TLS_LISTEN:-}"
       WG_ADDR:     "127.0.0.1:51820"
       AWG_JC:   "${AWG_JC:-4}"
       AWG_JMIN: "${AWG_JMIN:-50}"
@@ -81,10 +84,43 @@ services:
       - "${WG_PORT:-51820}:51820/udp"
       - "${OBFS_PORT:-51821}:51821/udp"
 
+  # ===== Xray agent =====
+  # Включить:  docker compose --profile xray up -d agent-xray xray
+  #
+  # agent-xray запускает control-loop (HTTP-API + heartbeat) и
+  # пишет /etc/xray/config.json во ВНЕШНИЙ volume xray_cfg.
+  # Сам xray-core живёт в отдельном контейнере, читает тот же volume.
+  agent-xray:
+    build: ./agent
+    profiles: ["xray"]
+    restart: unless-stopped
+    environment:
+      AGENT_PROTOCOL: "xray"
+      CONTROL_URL:    "${CONTROL_URL:-http://api:8080}"
+      AGENT_TOKEN:    "${AGENT_X_TOKEN:-}"
+      CONTROL_CA:     "${CONTROL_CA:-}"
+      CONTROL_CERT:   "${CONTROL_CERT:-}"
+      CONTROL_KEY:    "${CONTROL_KEY:-}"
+      AGENT_INSECURE_TLS: "${AGENT_INSECURE_TLS:-false}"
+      XRAY_BIN:    "/usr/bin/true"               # сам процесс xray в отдельном контейнере
+      XRAY_CONFIG: "/etc/xray/config.json"
+    volumes:
+      - xray_cfg:/etc/xray
+    depends_on:
+      - xray
+
+  xray:
+    image: teddysun/xray:latest
+    profiles: ["xray"]
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - xray_cfg:/etc/xray:ro
+    command: ["run", "-c", "/etc/xray/config.json"]
+
   prometheus:
     image: prom/prometheus:v2.52.0
-    profiles:
-      - metrics
+    profiles: ["metrics"]
     restart: unless-stopped
     volumes:
       - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
@@ -94,3 +130,4 @@ services:
 volumes:
   pgdata:
   agent_ca:
+  xray_cfg:

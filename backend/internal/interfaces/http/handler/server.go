@@ -28,14 +28,21 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := h.svc.Register(r.Context(), usecase.RegisterServerInput{
-		Name:        req.Name,
-		Endpoint:    req.Endpoint,
-		ListenPort:  req.ListenPort,
-		TCPPort:     req.TCPPort,
-		TLSPort:     req.TLSPort,
-		Subnet:      req.Subnet,
-		DNS:         req.DNS,
-		ObfsEnabled: req.ObfsEnabled,
+		Name:            req.Name,
+		Protocol:        domain.Protocol(req.Protocol),
+		Endpoint:        req.Endpoint,
+		ListenPort:      req.ListenPort,
+		TCPPort:         req.TCPPort,
+		TLSPort:         req.TLSPort,
+		Subnet:          req.Subnet,
+		DNS:             req.DNS,
+		ObfsEnabled:     req.ObfsEnabled,
+		XrayInboundPort: req.XrayInboundPort,
+		XraySNI:         req.XraySNI,
+		XrayDest:        req.XrayDest,
+		XrayShortIDsN:   req.XrayShortIDsN,
+		XrayFingerprint: req.XrayFingerprint,
+		XrayFlow:        req.XrayFlow,
 	})
 	if err != nil {
 		writeErr(w, err)

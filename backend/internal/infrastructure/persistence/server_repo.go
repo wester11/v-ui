@@ -24,12 +24,18 @@ func (r *ServerRepo) Create(ctx context.Context, s *domain.Server) error {
 	if err != nil {
 		return err
 	}
+	pcfg := s.ProtocolConfig
+	if len(pcfg) == 0 {
+		pcfg = []byte("{}")
+	}
 	_, err = r.db.Exec(ctx, `
 		INSERT INTO servers
-		    (id,name,endpoint,public_key,listen_port,tcp_port,tls_port,subnet,dns,
+		    (id,name,protocol,protocol_config,
+		     endpoint,public_key,listen_port,tcp_port,tls_port,subnet,dns,
 		     obfs_enabled,awg_params,agent_token,agent_cert_fingerprint,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-		s.ID, s.Name, s.Endpoint, s.PublicKey, int(s.ListenPort), int(s.TCPPort), int(s.TLSPort),
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		s.ID, s.Name, string(s.Protocol), pcfg,
+		s.Endpoint, s.PublicKey, int(s.ListenPort), int(s.TCPPort), int(s.TLSPort),
 		s.Subnet.String(), dns, s.ObfsEnabled, awg, s.AgentToken, s.AgentCertFingerprint,
 		s.CreatedAt, s.UpdatedAt)
 	return err
@@ -41,12 +47,18 @@ func (r *ServerRepo) Update(ctx context.Context, s *domain.Server) error {
 	if err != nil {
 		return err
 	}
+	pcfg := s.ProtocolConfig
+	if len(pcfg) == 0 {
+		pcfg = []byte("{}")
+	}
 	_, err = r.db.Exec(ctx, `
-		UPDATE servers SET name=$2,endpoint=$3,listen_port=$4,tcp_port=$5,tls_port=$6,
-		                  subnet=$7,dns=$8,obfs_enabled=$9,awg_params=$10,
-		                  online=$11,last_heartbeat=$12,updated_at=NOW()
+		UPDATE servers SET name=$2,protocol=$3,protocol_config=$4,
+		                  endpoint=$5,listen_port=$6,tcp_port=$7,tls_port=$8,
+		                  subnet=$9,dns=$10,obfs_enabled=$11,awg_params=$12,
+		                  online=$13,last_heartbeat=$14,updated_at=NOW()
 		WHERE id=$1`,
-		s.ID, s.Name, s.Endpoint, int(s.ListenPort), int(s.TCPPort), int(s.TLSPort),
+		s.ID, s.Name, string(s.Protocol), pcfg,
+		s.Endpoint, int(s.ListenPort), int(s.TCPPort), int(s.TLSPort),
 		s.Subnet.String(), dns, s.ObfsEnabled, awg, s.Online, s.LastHeartbeat)
 	return err
 }
@@ -91,17 +103,19 @@ func (r *ServerRepo) CountOnline(ctx context.Context) (int, int, error) {
 	return total, online, err
 }
 
-const serverSelect = `SELECT id,name,endpoint,public_key,listen_port,tcp_port,tls_port,
+const serverSelect = `SELECT id,name,protocol,protocol_config,
+                            endpoint,public_key,listen_port,tcp_port,tls_port,
                             subnet,dns,obfs_enabled,awg_params,
                             agent_token,agent_cert_fingerprint,
                             online,last_heartbeat,created_at,updated_at FROM servers`
 
 func scanServer(s scanner) (*domain.Server, error) {
 	srv := &domain.Server{}
-	var subnet, dns string
+	var subnet, dns, proto string
 	var lp, tcpp, tlsp int
-	var awg []byte
-	err := s.Scan(&srv.ID, &srv.Name, &srv.Endpoint, &srv.PublicKey,
+	var awg, pcfg []byte
+	err := s.Scan(&srv.ID, &srv.Name, &proto, &pcfg,
+		&srv.Endpoint, &srv.PublicKey,
 		&lp, &tcpp, &tlsp,
 		&subnet, &dns, &srv.ObfsEnabled, &awg,
 		&srv.AgentToken, &srv.AgentCertFingerprint,
@@ -112,6 +126,8 @@ func scanServer(s scanner) (*domain.Server, error) {
 		}
 		return nil, err
 	}
+	srv.Protocol = domain.Protocol(proto)
+	srv.ProtocolConfig = pcfg
 	srv.ListenPort = uint16(lp)
 	srv.TCPPort = uint16(tcpp)
 	srv.TLSPort = uint16(tlsp)

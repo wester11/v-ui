@@ -2,6 +2,7 @@ package persistence
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"net/netip"
 
@@ -17,11 +18,23 @@ type PeerRepo struct{ db *pgxpool.Pool }
 func NewPeerRepo(db *pgxpool.Pool) *PeerRepo { return &PeerRepo{db: db} }
 
 func (r *PeerRepo) Create(ctx context.Context, p *domain.Peer) error {
+	var assigned any
+	if p.AssignedIP.IsValid() {
+		assigned = p.AssignedIP.String()
+	}
+	var xrayUUID any
+	if p.XrayUUID != "" {
+		xrayUUID = p.XrayUUID
+	}
 	_, err := r.db.Exec(ctx, `
-		INSERT INTO peers (id,user_id,server_id,name,public_key,assigned_ip,enabled,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		p.ID, p.UserID, p.ServerID, p.Name, p.PublicKey, p.AssignedIP.String(),
-		p.Enabled, p.CreatedAt, p.UpdatedAt)
+		INSERT INTO peers
+		    (id,user_id,server_id,protocol,name,public_key,
+		     xray_uuid,xray_flow,xray_short_id,
+		     assigned_ip,enabled,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		p.ID, p.UserID, p.ServerID, string(p.Protocol), p.Name, p.PublicKey,
+		xrayUUID, p.XrayFlow, p.XrayShortID,
+		assigned, p.Enabled, p.CreatedAt, p.UpdatedAt)
 	return err
 }
 
@@ -39,7 +52,7 @@ func (r *PeerRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Peer, err
 }
 
 func (r *PeerRepo) GetByPublicKey(ctx context.Context, pubKey string) (*domain.Peer, error) {
-	row := r.db.QueryRow(ctx, peerSelect+` WHERE public_key=$1`, pubKey)
+	row := r.db.QueryRow(ctx, peerSelect+` WHERE public_key=$1 AND public_key<>''`, pubKey)
 	return scanPeer(row)
 }
 
@@ -79,23 +92,27 @@ func (r *PeerRepo) TotalTraffic(ctx context.Context) (uint64, uint64, error) {
 }
 
 func (r *PeerRepo) UsedIPs(ctx context.Context, serverID uuid.UUID) ([]string, error) {
-	rows, err := r.db.Query(ctx, `SELECT assigned_ip FROM peers WHERE server_id=$1`, serverID)
+	rows, err := r.db.Query(ctx,
+		`SELECT assigned_ip FROM peers WHERE server_id=$1 AND assigned_ip IS NOT NULL`, serverID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var ips []string
 	for rows.Next() {
-		var ip string
+		var ip sql.NullString
 		if err := rows.Scan(&ip); err != nil {
 			return nil, err
 		}
-		ips = append(ips, ip)
+		if ip.Valid && ip.String != "" {
+			ips = append(ips, ip.String)
+		}
 	}
 	return ips, rows.Err()
 }
 
-const peerSelect = `SELECT id,user_id,server_id,name,public_key,
+const peerSelect = `SELECT id,user_id,server_id,protocol,name,public_key,
+                          xray_uuid,xray_flow,xray_short_id,
                           assigned_ip,enabled,bytes_rx,bytes_tx,last_handshake,created_at,updated_at FROM peers`
 
 func scanPeers(rows pgx.Rows) ([]*domain.Peer, error) {
@@ -112,8 +129,11 @@ func scanPeers(rows pgx.Rows) ([]*domain.Peer, error) {
 
 func scanPeer(s scanner) (*domain.Peer, error) {
 	p := &domain.Peer{}
-	var ip string
-	err := s.Scan(&p.ID, &p.UserID, &p.ServerID, &p.Name, &p.PublicKey,
+	var proto string
+	var ip sql.NullString
+	var xrayUUID sql.NullString
+	err := s.Scan(&p.ID, &p.UserID, &p.ServerID, &proto, &p.Name, &p.PublicKey,
+		&xrayUUID, &p.XrayFlow, &p.XrayShortID,
 		&ip, &p.Enabled, &p.BytesRx, &p.BytesTx, &p.LastHandshake, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -121,11 +141,15 @@ func scanPeer(s scanner) (*domain.Peer, error) {
 		}
 		return nil, err
 	}
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return nil, err
+	p.Protocol = domain.Protocol(proto)
+	if xrayUUID.Valid {
+		p.XrayUUID = xrayUUID.String
 	}
-	p.AssignedIP = addr
-	p.AllowedIPs = []netip.Prefix{netip.PrefixFrom(addr, 32)}
+	if ip.Valid && ip.String != "" {
+		if addr, err := netip.ParseAddr(ip.String); err == nil {
+			p.AssignedIP = addr
+			p.AllowedIPs = []netip.Prefix{netip.PrefixFrom(addr, 32)}
+		}
+	}
 	return p, nil
 }

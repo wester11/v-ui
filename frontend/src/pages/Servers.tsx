@@ -8,22 +8,37 @@ import {
 } from '../components/ui'
 import { formatRelative, maskKey } from '../lib/format'
 
+type Protocol = 'wireguard' | 'amneziawg' | 'xray'
+
 interface FormState {
   name: string
+  protocol: Protocol
   endpoint: string
   listen_port: number
   subnet: string
   dns: string
   obfs_enabled: boolean
+  // Xray
+  xray_inbound_port: number
+  xray_sni: string
+  xray_dest: string
+  xray_short_ids: number
+  xray_fingerprint: string
 }
 
 const empty: FormState = {
   name: '',
+  protocol: 'amneziawg',
   endpoint: '',
   listen_port: 51820,
   subnet: '10.10.0.0/24',
   dns: '1.1.1.1, 9.9.9.9',
   obfs_enabled: true,
+  xray_inbound_port: 443,
+  xray_sni: 'www.cloudflare.com',
+  xray_dest: 'www.cloudflare.com:443',
+  xray_short_ids: 3,
+  xray_fingerprint: 'chrome',
 }
 
 export default function Servers() {
@@ -64,14 +79,24 @@ export default function Servers() {
     setBusy(true)
     try {
       const dns = form.dns.split(',').map((s) => s.trim()).filter(Boolean)
-      const resp: CreateServerResponse = await api.servers.create({
+      const body: any = {
         name: form.name.trim(),
+        protocol: form.protocol,
         endpoint: form.endpoint.trim(),
-        listen_port: form.listen_port,
-        subnet: form.subnet.trim(),
-        dns,
         obfs_enabled: form.obfs_enabled,
-      })
+      }
+      if (form.protocol === 'wireguard' || form.protocol === 'amneziawg') {
+        body.listen_port = form.listen_port
+        body.subnet = form.subnet.trim()
+        body.dns = dns
+      } else if (form.protocol === 'xray') {
+        body.xray_inbound_port = form.xray_inbound_port
+        body.xray_sni = form.xray_sni.trim()
+        body.xray_dest = form.xray_dest.trim()
+        body.xray_short_ids = form.xray_short_ids
+        body.xray_fingerprint = form.xray_fingerprint
+      }
+      const resp: CreateServerResponse = await api.servers.create(body)
       if (resp.agent_token) setToken({ name: resp.name, token: resp.agent_token })
       setForm(empty)
       setCreating(false)
@@ -189,45 +214,115 @@ export default function Servers() {
             required
             autoFocus
           />
+          <div className="stack-sm">
+            <label className="label">Protocol</label>
+            <select
+              className="select"
+              value={form.protocol}
+              onChange={(e) => setForm({ ...form, protocol: e.target.value as Protocol })}
+            >
+              <option value="wireguard">WireGuard</option>
+              <option value="amneziawg">AmneziaWG (UDP obfuscation)</option>
+              <option value="xray">Xray — VLESS + Reality</option>
+            </select>
+          </div>
           <Input
             label="Endpoint (host:port)"
-            placeholder="vpn.example.com:51820"
+            placeholder={form.protocol === 'xray' ? 'vpn.example.com:443' : 'vpn.example.com:51820'}
             value={form.endpoint}
             onChange={(e) => setForm({ ...form, endpoint: e.target.value })}
             required
           />
-          <div className="row">
-            <Input
-              label="Listen port"
-              type="number"
-              min={1}
-              max={65535}
-              value={form.listen_port}
-              onChange={(e) => setForm({ ...form, listen_port: parseInt(e.target.value || '0', 10) })}
-              required
-            />
-            <Input
-              label="Subnet (CIDR)"
-              placeholder="10.10.0.0/24"
-              value={form.subnet}
-              onChange={(e) => setForm({ ...form, subnet: e.target.value })}
-              required
-            />
-          </div>
-          <Input
-            label="DNS (comma-separated)"
-            placeholder="1.1.1.1, 9.9.9.9"
-            value={form.dns}
-            onChange={(e) => setForm({ ...form, dns: e.target.value })}
-          />
-          <label className="row gap-2" style={{ cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={form.obfs_enabled}
-              onChange={(e) => setForm({ ...form, obfs_enabled: e.target.checked })}
-            />
-            <span>Enable UDP obfuscation</span>
-          </label>
+
+          {(form.protocol === 'wireguard' || form.protocol === 'amneziawg') && (
+            <>
+              <div className="row">
+                <Input
+                  label="Listen port (UDP)"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={form.listen_port}
+                  onChange={(e) => setForm({ ...form, listen_port: parseInt(e.target.value || '0', 10) })}
+                  required
+                />
+                <Input
+                  label="Subnet (CIDR)"
+                  placeholder="10.10.0.0/24"
+                  value={form.subnet}
+                  onChange={(e) => setForm({ ...form, subnet: e.target.value })}
+                  required
+                />
+              </div>
+              <Input
+                label="DNS (comma-separated)"
+                placeholder="1.1.1.1, 9.9.9.9"
+                value={form.dns}
+                onChange={(e) => setForm({ ...form, dns: e.target.value })}
+              />
+              <label className="row gap-2" style={{ cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={form.obfs_enabled || form.protocol === 'amneziawg'}
+                  disabled={form.protocol === 'amneziawg'}
+                  onChange={(e) => setForm({ ...form, obfs_enabled: e.target.checked })}
+                />
+                <span>Enable UDP obfuscation</span>
+              </label>
+            </>
+          )}
+
+          {form.protocol === 'xray' && (
+            <>
+              <div className="row">
+                <Input
+                  label="Inbound port (TCP)"
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={form.xray_inbound_port}
+                  onChange={(e) => setForm({ ...form, xray_inbound_port: parseInt(e.target.value || '443', 10) })}
+                />
+                <Input
+                  label="ShortIDs pool size"
+                  type="number"
+                  min={1}
+                  max={16}
+                  value={form.xray_short_ids}
+                  onChange={(e) => setForm({ ...form, xray_short_ids: parseInt(e.target.value || '3', 10) })}
+                />
+              </div>
+              <Input
+                label="Reality SNI"
+                placeholder="www.cloudflare.com"
+                value={form.xray_sni}
+                onChange={(e) => setForm({ ...form, xray_sni: e.target.value })}
+              />
+              <Input
+                label="Reality dest (host:port)"
+                placeholder="www.cloudflare.com:443"
+                value={form.xray_dest}
+                onChange={(e) => setForm({ ...form, xray_dest: e.target.value })}
+              />
+              <div className="stack-sm">
+                <label className="label">Fingerprint</label>
+                <select
+                  className="select"
+                  value={form.xray_fingerprint}
+                  onChange={(e) => setForm({ ...form, xray_fingerprint: e.target.value })}
+                >
+                  <option value="chrome">chrome</option>
+                  <option value="firefox">firefox</option>
+                  <option value="safari">safari</option>
+                  <option value="random">random</option>
+                </select>
+              </div>
+              <div className="text-xs text-mute">
+                Reality X25519-keypair и shortIds сгенерируются автоматически на сервере.
+              </div>
+            </>
+          )}
+
           {err && <div className="text-danger text-sm">{err}</div>}
         </form>
       </Modal>

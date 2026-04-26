@@ -69,10 +69,10 @@ export const api = {
   },
   peers: {
     list: () => request<Peer[]>('/api/v1/peers'),
-    create: (server_id: string, name: string) =>
+    create: (server_id: string, name: string, public_key?: string) =>
       request<CreatePeerResponse>('/api/v1/peers', {
         method: 'POST',
-        body: JSON.stringify({ server_id, name }),
+        body: JSON.stringify({ server_id, name, public_key }),
       }),
     delete: (id: string) =>
       request<void>(`/api/v1/peers/${id}`, { method: 'DELETE' }),

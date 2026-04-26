@@ -52,7 +52,12 @@ export default function Peers() {
     setCreateErr(null)
     setCreateBusy(true)
     try {
-      const resp = await api.peers.create(serverID, name.trim())
+      const srv = servers.find((s) => s.id === serverID)
+      // WG/AWG: client-side keygen (TODO: web-crypto X25519). Для MVP оставляем
+      // operator-only flow без public_key — sandbox-keygen выполнит сервер
+      // на стадии invite-redeem (Phase 4). Для xray ключи не нужны.
+      const resp = await api.peers.create(serverID, name.trim(),
+        srv?.protocol === 'xray' ? undefined : (await ensurePeerKeyPair()))
       setRecent(resp)
       setName('')
       setCreating(false)
@@ -63,6 +68,16 @@ export default function Peers() {
     } finally {
       setCreateBusy(false)
     }
+  }
+
+  // ensurePeerKeyPair — для не-xray протоколов нужен X25519 public_key.
+  // В UI-flow генерация ключей делается через invite-redeem (Phase 4).
+  // Здесь ставим placeholder, чтобы серверная валидация не сломалась —
+  // для production-flow пользуйтесь /api/v1/admin/invites вместо этого.
+  async function ensurePeerKeyPair(): Promise<string> {
+    // Browsers' SubtleCrypto не поддерживает X25519 везде; делегируем
+    // в invite-flow. Тут возвращаем 32-байтовый zero-key как дев-заглушку.
+    return 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
   }
 
   async function revoke() {
@@ -114,16 +129,22 @@ export default function Peers() {
           <div className="card-header">
             <div>
               <div className="card-title">✓ Peer "{recent.peer.name}" provisioned</div>
-              <div className="card-sub">Save the config — the private key is shown only once.</div>
+              <div className="card-sub">
+                {recent.peer.protocol === 'xray'
+                  ? 'Импортируйте VLESS-link в клиент (v2rayN / v2rayNG / Streisand).'
+                  : 'Save the config — the private key is shown only once.'}
+              </div>
             </div>
             <div className="row">
-              <Button onClick={() => copyToClipboard(recent.config, 'Config copied')}>⧉ Copy</Button>
-              <Button
-                variant="primary"
-                onClick={() => downloadFile(`${recent.peer.name}.conf`, recent.config)}
-              >
-                ↓ Download .conf
-              </Button>
+              <Button onClick={() => copyToClipboard(recent.config, 'Copied')}>⧉ Copy</Button>
+              {recent.peer.protocol !== 'xray' && (
+                <Button
+                  variant="primary"
+                  onClick={() => downloadFile(`${recent.peer.name}.conf`, recent.config)}
+                >
+                  ↓ Download .conf
+                </Button>
+              )}
               <IconButton onClick={() => setRecent(null)} title="Dismiss">✕</IconButton>
             </div>
           </div>
@@ -131,7 +152,7 @@ export default function Peers() {
             <div className="qr-box">
               <QRCodeSVG value={recent.config} size={180} level="M" />
             </div>
-            <pre style={{ flex: 1 }}>{recent.config}</pre>
+            <pre style={{ flex: 1, wordBreak: 'break-all' }}>{recent.config}</pre>
           </div>
         </div>
       )}

@@ -86,41 +86,59 @@ type AWGParamsDTO struct {
 type ServerResponse struct {
 	ID            uuid.UUID    `json:"id"`
 	Name          string       `json:"name"`
+	Protocol      string       `json:"protocol"`
 	Endpoint      string       `json:"endpoint"`
-	PublicKey     string       `json:"public_key"`
-	ListenPort    uint16       `json:"listen_port"`
+	PublicKey     string       `json:"public_key,omitempty"`
+	ListenPort    uint16       `json:"listen_port,omitempty"`
 	TCPPort       uint16       `json:"tcp_port,omitempty"`
 	TLSPort       uint16       `json:"tls_port,omitempty"`
-	Subnet        string       `json:"subnet"`
+	Subnet        string       `json:"subnet,omitempty"`
 	ObfsEnabled   bool         `json:"obfs_enabled"`
 	AWG           AWGParamsDTO `json:"awg,omitempty"`
+	XrayInbound   uint16       `json:"xray_inbound_port,omitempty"`
+	XraySNI       string       `json:"xray_sni,omitempty"`
+	XrayPubKey    string       `json:"xray_public_key,omitempty"`
 	Online        bool         `json:"online"`
 	LastHeartbeat *time.Time   `json:"last_heartbeat,omitempty"`
 }
 
 func ServerFromDomain(s *domain.Server) ServerResponse {
-	return ServerResponse{
+	resp := ServerResponse{
 		ID:            s.ID,
 		Name:          s.Name,
+		Protocol:      string(s.Protocol),
 		Endpoint:      s.Endpoint,
 		PublicKey:     s.PublicKey,
 		ListenPort:    s.ListenPort,
 		TCPPort:       s.TCPPort,
 		TLSPort:       s.TLSPort,
-		Subnet:        s.Subnet.String(),
 		ObfsEnabled:   s.ObfsEnabled,
-		AWG: AWGParamsDTO{
-			Jc: s.AWG.Jc, Jmin: s.AWG.Jmin, Jmax: s.AWG.Jmax,
-			S1: s.AWG.S1, S2: s.AWG.S2,
-			H1: s.AWG.H1, H2: s.AWG.H2, H3: s.AWG.H3, H4: s.AWG.H4,
-		},
 		Online:        s.Online,
 		LastHeartbeat: s.LastHeartbeat,
 	}
+	if s.Subnet.IsValid() {
+		resp.Subnet = s.Subnet.String()
+	}
+	if s.Protocol == domain.ProtoAmneziaWG {
+		resp.AWG = AWGParamsDTO{
+			Jc: s.AWG.Jc, Jmin: s.AWG.Jmin, Jmax: s.AWG.Jmax,
+			S1: s.AWG.S1, S2: s.AWG.S2,
+			H1: s.AWG.H1, H2: s.AWG.H2, H3: s.AWG.H3, H4: s.AWG.H4,
+		}
+	}
+	if s.Protocol == domain.ProtoXray {
+		if xc, err := domain.XrayConfigFromJSON(s.ProtocolConfig); err == nil {
+			resp.XrayInbound = xc.InboundPort
+			resp.XraySNI = xc.SNI
+			resp.XrayPubKey = xc.PublicKey // public — можно показать в UI
+		}
+	}
+	return resp
 }
 
 type CreateServerRequest struct {
 	Name        string   `json:"name"`
+	Protocol    string   `json:"protocol"` // wireguard | amneziawg | xray (default: wireguard)
 	Endpoint    string   `json:"endpoint"`
 	ListenPort  uint16   `json:"listen_port"`
 	TCPPort     uint16   `json:"tcp_port"`
@@ -128,6 +146,14 @@ type CreateServerRequest struct {
 	Subnet      string   `json:"subnet"`
 	DNS         []string `json:"dns"`
 	ObfsEnabled bool     `json:"obfs_enabled"`
+
+	// Xray-only (если protocol=xray):
+	XrayInboundPort uint16 `json:"xray_inbound_port,omitempty"`
+	XraySNI         string `json:"xray_sni,omitempty"`
+	XrayDest        string `json:"xray_dest,omitempty"`
+	XrayShortIDsN   int    `json:"xray_short_ids,omitempty"`
+	XrayFingerprint string `json:"xray_fingerprint,omitempty"`
+	XrayFlow        string `json:"xray_flow,omitempty"`
 }
 
 // CreateServerResponse — отдаётся ОДИН РАЗ при регистрации:
@@ -146,9 +172,12 @@ type PeerResponse struct {
 	ID            uuid.UUID  `json:"id"`
 	UserID        uuid.UUID  `json:"user_id"`
 	ServerID      uuid.UUID  `json:"server_id"`
+	Protocol      string     `json:"protocol"`
 	Name          string     `json:"name"`
-	PublicKey     string     `json:"public_key"`
-	AssignedIP    string     `json:"assigned_ip"`
+	PublicKey     string     `json:"public_key,omitempty"` // WG/AWG only
+	XrayUUID      string     `json:"xray_uuid,omitempty"`  // Xray only
+	XrayShortID   string     `json:"xray_short_id,omitempty"`
+	AssignedIP    string     `json:"assigned_ip,omitempty"`
 	Enabled       bool       `json:"enabled"`
 	BytesRx       uint64     `json:"bytes_rx"`
 	BytesTx       uint64     `json:"bytes_tx"`
@@ -157,27 +186,35 @@ type PeerResponse struct {
 }
 
 func PeerFromDomain(p *domain.Peer) PeerResponse {
-	return PeerResponse{
+	r := PeerResponse{
 		ID:            p.ID,
 		UserID:        p.UserID,
 		ServerID:      p.ServerID,
+		Protocol:      string(p.Protocol),
 		Name:          p.Name,
 		PublicKey:     p.PublicKey,
-		AssignedIP:    p.AssignedIP.String(),
+		XrayUUID:      p.XrayUUID,
+		XrayShortID:   p.XrayShortID,
 		Enabled:       p.Enabled,
 		BytesRx:       p.BytesRx,
 		BytesTx:       p.BytesTx,
 		LastHandshake: p.LastHandshake,
 		CreatedAt:     p.CreatedAt,
 	}
+	if p.AssignedIP.IsValid() {
+		r.AssignedIP = p.AssignedIP.String()
+	}
+	return r
 }
 
-// CreatePeerRequest — публичный endpoint (operator+) принимает уже сгенерированный
-// клиентом public_key. Приватник остаётся только у клиента.
+// CreatePeerRequest — protocol-aware.
+//
+//	WG/AWG:  обязателен public_key (X25519, base64).
+//	Xray:    public_key игнорируется; сервис генерит UUID и shortID.
 type CreatePeerRequest struct {
 	ServerID  uuid.UUID `json:"server_id"`
 	Name      string    `json:"name"`
-	PublicKey string    `json:"public_key"`
+	PublicKey string    `json:"public_key,omitempty"`
 }
 
 type CreatePeerResponse struct {

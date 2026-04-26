@@ -1,21 +1,14 @@
 package domain
 
 import (
+	"encoding/json"
 	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-// AWGParams — параметры AmneziaWG-style обфускации, передаются клиенту.
-//
-// Эти значения встраиваются в peer-конфиг и реализуют:
-//   - Jc (JunkPacketCount): N мусорных пакетов перед handshake'ом
-//   - Jmin/Jmax: длина каждого мусорного пакета (random в [Jmin, Jmax])
-//   - S1/S2: случайные байты, препендятся к InitiationPacket / ResponsePacket
-//   - H1/H2/H3/H4: подменяемые значения message_type для handshake-кадров
-//
-// Совпадает с reference-имплементацией amnezia-vpn/amneziawg-go.
+// AWGParams — параметры AmneziaWG-обфускации (см. Phase 4).
 type AWGParams struct {
 	Jc   uint8  `json:"Jc"`
 	Jmin uint16 `json:"Jmin"`
@@ -28,23 +21,25 @@ type AWGParams struct {
 	H4   uint32 `json:"H4"`
 }
 
-// Server — VPN-нода (агент).
+// Server — VPN-нода. Поле Protocol определяет, какой транспорт запускает агент.
 type Server struct {
-	ID                     uuid.UUID
-	Name                   string
-	Endpoint               string // host:port (UDP)
-	PublicKey              string
-	ListenPort             uint16
-	TCPPort                uint16 // fallback: UDP-over-TCP (0 = выключено)
-	TLSPort                uint16 // fallback: UDP-over-TLS (0 = выключено)
-	Subnet                 netip.Prefix
-	DNS                    []netip.Addr
-	ObfsEnabled            bool
-	AWG                    AWGParams
-	AgentToken             string
-	AgentCertFingerprint   string // SHA-256 client-cert fingerprint для mTLS
-	LastHeartbeat          *time.Time
-	Online                 bool
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	ID                   uuid.UUID
+	Name                 string
+	Protocol             Protocol         // wireguard | amneziawg | xray
+	ProtocolConfig       json.RawMessage  // protocol-specific (XrayConfig для xray)
+	Endpoint             string           // host:port (для WG/AWG — UDP, для xray — TCP)
+	PublicKey            string           // WG public key (для xray не используется)
+	ListenPort           uint16
+	TCPPort              uint16
+	TLSPort              uint16
+	Subnet               netip.Prefix
+	DNS                  []netip.Addr
+	ObfsEnabled          bool
+	AWG                  AWGParams
+	AgentToken           string
+	AgentCertFingerprint string
+	LastHeartbeat        *time.Time
+	Online               bool
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
