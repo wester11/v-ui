@@ -1,0 +1,2 @@
+# TLS-сертификаты (fullchain.pem / privkey.pem) кладутся сюда install.sh.
+# Содержимое игнорируется git'ом (.gitignore: *.pem, *.key).

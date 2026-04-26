@@ -1,0 +1,11 @@
+[Unit]
+Description=void-wg TLS certificate renewal
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/void-wg/scripts/renew-cert.sh
+TimeoutStartSec=300
+StandardOutput=journal
+StandardError=journal

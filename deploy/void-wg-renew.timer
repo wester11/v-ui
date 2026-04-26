@@ -1,0 +1,14 @@
+[Unit]
+Description=void-wg TLS renewal timer (twice daily)
+Documentation=man:certbot(1)
+
+[Timer]
+# Запускать в 03:17 и 15:17 (как делает стандартный certbot.timer)
+OnCalendar=*-*-* 03:17:00
+OnCalendar=*-*-* 15:17:00
+RandomizedDelaySec=2h
+Persistent=true
+Unit=void-wg-renew.service
+
+[Install]
+WantedBy=timers.target
