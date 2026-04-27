@@ -1,5 +1,11 @@
 # void-wg
 
+> [!IMPORTANT]
+> Canonical repository: https://github.com/wester11/v-ui
+>
+> Use only v-ui links for install/clone.
+> void_wg may be outdated and can break installs.
+
 Production-ready WireGuard VPN management system: REST API + JWT, React UI,
 агенты на узлах, базовая обфускация UDP-трафика, метрики Prometheus,
 Docker-ready, one-click установка.
@@ -10,7 +16,7 @@ Docker-ready, one-click установка.
 ## One-click установка
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/wester11/void_wg/main/scripts/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/wester11/v-ui/main/scripts/install.sh)
 ```
 
 Скрипт:
@@ -57,7 +63,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/wester11/void_wg/main/scripts/
 
 ```bash
 PANEL_PORT=9000 ADMIN_EMAIL=root@example.com \
-bash <(curl -Ls https://raw.githubusercontent.com/wester11/void_wg/main/scripts/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/wester11/v-ui/main/scripts/install.sh)
 ```
 
 | Переменная          | По умолчанию                                  | Назначение                                       |
@@ -71,14 +77,14 @@ bash <(curl -Ls https://raw.githubusercontent.com/wester11/void_wg/main/scripts/
 | `TLS_MODE`          | спрашивает интерактивно                       | `selfsigned`, `letsencrypt` или `none`           |
 | `PANEL_DOMAIN`      | спрашивает интерактивно (если `letsencrypt`)  | домен для Let's Encrypt                          |
 | `LE_EMAIL`          | спрашивает интерактивно                       | email для уведомлений Let's Encrypt              |
-| `REPO_URL`          | `https://github.com/wester11/void_wg.git`     | откуда клонировать                               |
+| `REPO_URL`          | `https://github.com/wester11/v-ui.git`     | откуда клонировать                               |
 | `REPO_BRANCH`       | `main`                                        | какая ветка                                      |
 
 Не-интерактивный пример:
 
 ```bash
 TLS_MODE=letsencrypt PANEL_DOMAIN=vpn.example.com LE_EMAIL=ops@example.com \
-bash <(curl -Ls https://raw.githubusercontent.com/wester11/void_wg/main/scripts/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/wester11/v-ui/main/scripts/install.sh)
 ```
 
 ## CLI: `v-wg`
@@ -176,8 +182,8 @@ sudo bash /opt/void-wg/scripts/uninstall.sh   # снос с подтвержде
 ## Запуск через docker compose (без install.sh)
 
 ```bash
-git clone https://github.com/wester11/void_wg.git
-cd void_wg
+git clone https://github.com/wester11/v-ui.git
+cd v-ui
 cp .env.example .env
 # отредактируйте секреты в .env (или просто запустите ./scripts/install.sh)
 docker compose up -d --build
@@ -269,7 +275,7 @@ cd backend && go mod tidy && go run ./cmd/api
 cd frontend && npm install && npm run dev   # http://localhost:5173
 
 # Запушить в свой fork
-GH_TOKEN=ghp_xxx GH_USER=<me> GH_REPO=void_wg bash scripts/publish-to-github.sh
+GH_TOKEN=ghp_xxx GH_USER=<me> GH_REPO=v-ui bash scripts/publish-to-github.sh
 ```
 
 ## Лицензия
