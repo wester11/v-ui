@@ -626,6 +626,19 @@ install_renew_timer() {
     ok "Auto-renewal enabled"
 }
 
+install_update_timer() {
+    local svc_src="$INSTALL_DIR/deploy/void-wg-update.service"
+    local tmr_src="$INSTALL_DIR/deploy/void-wg-update.timer"
+    [ -f "$svc_src" ] || { warn "$svc_src missing — skipping update timer"; return; }
+    [ -f "$tmr_src" ] || { warn "$tmr_src missing — skipping update timer"; return; }
+    log "Installing systemd update timer (daily)"
+    sed "s|/opt/void-wg|$INSTALL_DIR|g" "$svc_src" > /etc/systemd/system/void-wg-update.service
+    cp "$tmr_src" /etc/systemd/system/void-wg-update.timer
+    systemctl daemon-reload
+    run systemctl enable --now void-wg-update.timer
+    ok "Auto-update enabled"
+}
+
 start_stack() {
     log "Building and starting containers (first run can take a few minutes)..."
     cd "$INSTALL_DIR"
@@ -693,6 +706,7 @@ print_summary() {
   TLS dir:  ${INSTALL_DIR}/runtime/tls
   Logs:     docker compose -f ${INSTALL_DIR}/docker-compose.yml logs -f
   Update:   sudo bash ${INSTALL_DIR}/scripts/update.sh
+  Auto-upd: systemctl status void-wg-update.timer
   Renew:    sudo bash ${INSTALL_DIR}/scripts/renew-cert.sh
   Remove:   sudo bash ${INSTALL_DIR}/scripts/uninstall.sh
 
@@ -734,6 +748,7 @@ main() {
     step 6 "Installing systemd units and CLI"
     install_systemd_unit
     install_renew_timer
+    install_update_timer
     install_cli_wrapper
 
     step 7 "Starting containers"

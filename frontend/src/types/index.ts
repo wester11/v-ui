@@ -7,21 +7,30 @@ export interface User {
 }
 
 export type Protocol = 'wireguard' | 'amneziawg' | 'xray'
+export type ServerMode = 'standalone' | 'cascade'
+
+export interface CascadeRule {
+  match: string
+  outbound: 'direct' | 'proxy'
+}
 
 export interface Server {
   id: string
   name: string
   protocol: Protocol
+  mode?: ServerMode
   endpoint: string
-  public_key?: string         // wireguard / amneziawg
+  public_key?: string
   listen_port?: number
   tcp_port?: number
   tls_port?: number
   subnet?: string
   obfs_enabled: boolean
-  xray_inbound_port?: number  // xray
+  xray_inbound_port?: number
   xray_sni?: string
   xray_public_key?: string
+  cascade_upstream_id?: string
+  cascade_rules?: CascadeRule[]
   online: boolean
   last_heartbeat?: string | null
 }
@@ -32,8 +41,8 @@ export interface Peer {
   server_id: string
   protocol: Protocol
   name: string
-  public_key?: string       // WG/AWG
-  xray_uuid?: string        // Xray
+  public_key?: string
+  xray_uuid?: string
   xray_short_id?: string
   assigned_ip?: string
   enabled: boolean
@@ -66,4 +75,35 @@ export interface Stats {
 
 export interface CreateServerResponse extends Server {
   agent_token?: string
+}
+
+export interface AuditEntry {
+  id: number
+  ts: string
+  actor_id?: string
+  actor_email?: string
+  action: string
+  target_type?: string
+  target_id?: string
+  ip?: string
+  user_agent?: string
+  result: string
+  meta?: Record<string, unknown>
+}
+
+export interface FleetRedeployResult {
+  server_id: string
+  name: string
+  status: 'ok' | 'error'
+  retries: number
+  error?: string
+}
+
+export interface FleetHealthResult {
+  server_id: string
+  name: string
+  protocol: string
+  status: 'online' | 'offline' | 'degraded'
+  last_heartbeat?: string | null
+  error?: string
 }

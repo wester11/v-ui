@@ -9,36 +9,48 @@ import {
 import { formatRelative, maskKey } from '../lib/format'
 
 type Protocol = 'wireguard' | 'amneziawg' | 'xray'
+type Mode = 'standalone' | 'cascade'
 
 interface FormState {
   name: string
   protocol: Protocol
+  mode: Mode
   endpoint: string
   listen_port: number
   subnet: string
   dns: string
   obfs_enabled: boolean
-  // Xray
+
   xray_inbound_port: number
   xray_sni: string
   xray_dest: string
   xray_short_ids: number
   xray_fingerprint: string
+
+  cascade_upstream_id: string
+  rule_ru_direct: boolean
+  rule_non_ru_proxy: boolean
 }
 
 const empty: FormState = {
   name: '',
-  protocol: 'amneziawg',
+  protocol: 'xray',
+  mode: 'standalone',
   endpoint: '',
   listen_port: 51820,
   subnet: '10.10.0.0/24',
   dns: '1.1.1.1, 9.9.9.9',
   obfs_enabled: true,
+
   xray_inbound_port: 443,
   xray_sni: 'www.cloudflare.com',
   xray_dest: 'www.cloudflare.com:443',
   xray_short_ids: 3,
   xray_fingerprint: 'chrome',
+
+  cascade_upstream_id: '',
+  rule_ru_direct: true,
+  rule_non_ru_proxy: true,
 }
 
 export default function Servers() {
@@ -73,6 +85,11 @@ export default function Servers() {
     )
   }, [list, search])
 
+  const xrayServers = useMemo(
+    () => (list ?? []).filter((s) => s.protocol === 'xray'),
+    [list],
+  )
+
   async function submit(e: React.FormEvent) {
     e.preventDefault()
     setErr(null)
@@ -82,20 +99,33 @@ export default function Servers() {
       const body: any = {
         name: form.name.trim(),
         protocol: form.protocol,
+        mode: form.protocol === 'xray' ? form.mode : 'standalone',
         endpoint: form.endpoint.trim(),
         obfs_enabled: form.obfs_enabled,
       }
+
       if (form.protocol === 'wireguard' || form.protocol === 'amneziawg') {
         body.listen_port = form.listen_port
         body.subnet = form.subnet.trim()
         body.dns = dns
-      } else if (form.protocol === 'xray') {
+      }
+
+      if (form.protocol === 'xray') {
         body.xray_inbound_port = form.xray_inbound_port
         body.xray_sni = form.xray_sni.trim()
         body.xray_dest = form.xray_dest.trim()
         body.xray_short_ids = form.xray_short_ids
         body.xray_fingerprint = form.xray_fingerprint
+
+        if (form.mode === 'cascade') {
+          body.cascade_upstream_id = form.cascade_upstream_id
+          const rules: Array<{ match: string; outbound: 'direct' | 'proxy' }> = []
+          if (form.rule_ru_direct) rules.push({ match: 'geoip:ru', outbound: 'direct' })
+          if (form.rule_non_ru_proxy) rules.push({ match: 'geoip:!ru', outbound: 'proxy' })
+          body.cascade_rules = rules
+        }
       }
+
       const resp: CreateServerResponse = await api.servers.create(body)
       if (resp.agent_token) setToken({ name: resp.name, token: resp.agent_token })
       setForm(empty)
@@ -129,12 +159,12 @@ export default function Servers() {
       <div className="page-header">
         <div>
           <div className="page-title">Servers</div>
-          <div className="page-sub">VPN nodes registered with this control plane.</div>
+          <div className="page-sub">Register nodes, set routing mode, and monitor health.</div>
         </div>
-        <div className="row">
+        <div className="row" style={{ flexWrap: 'wrap' }}>
           <input
             className="search-input"
-            placeholder="Search servers…"
+            placeholder="Search servers..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -150,7 +180,7 @@ export default function Servers() {
         ) : filtered && filtered.length === 0 ? (
           <Empty
             title={search ? 'No servers match your search' : 'No servers yet'}
-            sub={search ? 'Try a different query.' : 'Register your first VPN node so peers can be provisioned.'}
+            sub={search ? 'Try a different query.' : 'Register your first VPN node so clients can be provisioned.'}
             action={!search ? <Button variant="primary" onClick={() => setCreating(true)}>+ Register server</Button> : undefined}
           />
         ) : (
@@ -159,10 +189,10 @@ export default function Servers() {
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th>Protocol</th>
+                  <th>Mode</th>
                   <th>Endpoint</th>
                   <th>Subnet</th>
-                  <th>Port</th>
-                  <th>Obfs</th>
                   <th>Status</th>
                   <th>Last heartbeat</th>
                   <th>Public key</th>
@@ -173,13 +203,13 @@ export default function Servers() {
                 {filtered!.map((s) => (
                   <tr key={s.id}>
                     <td><Link to={`/servers/${s.id}`}><strong>{s.name}</strong></Link></td>
+                    <td><Badge tone="info">{s.protocol}</Badge></td>
+                    <td>{s.mode === 'cascade' ? <Badge tone="violet">cascade</Badge> : <Badge>standalone</Badge>}</td>
                     <td><code>{s.endpoint}</code></td>
-                    <td><code>{s.subnet}</code></td>
-                    <td className="text-mono">{s.listen_port}</td>
-                    <td>{s.obfs_enabled ? <Badge tone="info">on</Badge> : <Badge>off</Badge>}</td>
+                    <td><code>{s.subnet || '-'}</code></td>
                     <td><StatusDot online={s.online} /></td>
                     <td className="text-dim">{formatRelative(s.last_heartbeat)}</td>
-                    <td><code>{maskKey(s.public_key)}</code></td>
+                    <td><code>{maskKey(s.public_key ?? s.xray_public_key)}</code></td>
                     <td className="actions">
                       <div className="row-end">
                         <Link to={`/servers/${s.id}`}><Button size="sm">Open</Button></Link>
@@ -208,24 +238,41 @@ export default function Servers() {
         <form className="stack" onSubmit={submit}>
           <Input
             label="Name"
-            placeholder="de-1"
+            placeholder="eu-gateway-1"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             required
             autoFocus
           />
-          <div className="stack-sm">
-            <label className="label">Protocol</label>
-            <select
-              className="select"
-              value={form.protocol}
-              onChange={(e) => setForm({ ...form, protocol: e.target.value as Protocol })}
-            >
-              <option value="wireguard">WireGuard</option>
-              <option value="amneziawg">AmneziaWG (UDP obfuscation)</option>
-              <option value="xray">Xray — VLESS + Reality</option>
-            </select>
+
+          <div className="row" style={{ alignItems: 'flex-start' }}>
+            <div className="stack-sm" style={{ flex: 1 }}>
+              <label className="label">Protocol</label>
+              <select
+                className="select"
+                value={form.protocol}
+                onChange={(e) => setForm({ ...form, protocol: e.target.value as Protocol, mode: 'standalone' })}
+              >
+                <option value="wireguard">WireGuard</option>
+                <option value="amneziawg">AmneziaWG (UDP obfuscation)</option>
+                <option value="xray">Xray (VLESS + Reality)</option>
+              </select>
+            </div>
+
+            <div className="stack-sm" style={{ flex: 1 }}>
+              <label className="label">Mode <span className="text-mute" title="Cascade is available only for Xray protocol">(?)</span></label>
+              <select
+                className="select"
+                value={form.mode}
+                disabled={form.protocol !== 'xray'}
+                onChange={(e) => setForm({ ...form, mode: e.target.value as Mode })}
+              >
+                <option value="standalone">Standalone</option>
+                <option value="cascade">Cascade (multi-hop)</option>
+              </select>
+            </div>
           </div>
+
           <Input
             label="Endpoint (host:port)"
             placeholder={form.protocol === 'xray' ? 'vpn.example.com:443' : 'vpn.example.com:51820'}
@@ -292,6 +339,7 @@ export default function Servers() {
                   onChange={(e) => setForm({ ...form, xray_short_ids: parseInt(e.target.value || '3', 10) })}
                 />
               </div>
+
               <Input
                 label="Reality SNI"
                 placeholder="www.cloudflare.com"
@@ -304,6 +352,7 @@ export default function Servers() {
                 value={form.xray_dest}
                 onChange={(e) => setForm({ ...form, xray_dest: e.target.value })}
               />
+
               <div className="stack-sm">
                 <label className="label">Fingerprint</label>
                 <select
@@ -317,9 +366,43 @@ export default function Servers() {
                   <option value="random">random</option>
                 </select>
               </div>
-              <div className="text-xs text-mute">
-                Reality X25519-keypair и shortIds сгенерируются автоматически на сервере.
-              </div>
+
+              {form.mode === 'cascade' && (
+                <div className="state-panel" style={{ gap: 12 }}>
+                  <div className="text-sm"><strong>Cascade routing</strong>: split traffic by geo rules and send non-local through upstream.</div>
+                  <div className="stack-sm">
+                    <label className="label">Upstream server</label>
+                    <select
+                      className="select"
+                      value={form.cascade_upstream_id}
+                      onChange={(e) => setForm({ ...form, cascade_upstream_id: e.target.value })}
+                      required
+                    >
+                      <option value="">Select upstream...</option>
+                      {xrayServers.filter((s) => s.id !== confirm?.id).map((s) => (
+                        <option key={s.id} value={s.id}>{s.name} ({s.endpoint})</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <label className="row gap-2" style={{ cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={form.rule_ru_direct}
+                      onChange={(e) => setForm({ ...form, rule_ru_direct: e.target.checked })}
+                    />
+                    <span><code>geoip:ru</code> - direct</span>
+                  </label>
+                  <label className="row gap-2" style={{ cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={form.rule_non_ru_proxy}
+                      onChange={(e) => setForm({ ...form, rule_non_ru_proxy: e.target.checked })}
+                    />
+                    <span><code>geoip:!ru</code> - proxy via upstream</span>
+                  </label>
+                </div>
+              )}
             </>
           )}
 
@@ -336,12 +419,11 @@ export default function Servers() {
         >
           <div className="stack">
             <div className="text-warn text-sm">
-              ⚠ Save this token now — it won't be shown again. The agent on the VPN node uses it
-              to authenticate against this control plane.
+              Save this token now - it will not be shown again.
             </div>
             <CopyField value={token.token} mask />
             <div className="text-mono text-xs text-mute">
-              Pass it as <code>AGENT_TOKEN</code> to the agent container.
+              Pass it as <code>AGENT_TOKEN</code> to the node agent.
             </div>
           </div>
         </Modal>
@@ -352,8 +434,7 @@ export default function Servers() {
         title="Remove server?"
         body={
           <>
-            This will remove server <strong>{confirm?.name}</strong> and any associated peers.
-            The agent on the node will lose authorization on next heartbeat.
+            This will remove server <strong>{confirm?.name}</strong> and associated clients.
           </>
         }
         confirmText="Remove"

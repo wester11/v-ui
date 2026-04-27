@@ -1,5 +1,4 @@
-// Package xray — генератор Xray-core config.json (серверная часть)
-// и клиентских VLESS+Reality URI.
+// Package xray renders Xray-core config.json and client VLESS+Reality URIs.
 package xray
 
 import (
@@ -14,8 +13,7 @@ import (
 	"github.com/voidwg/control/internal/domain"
 )
 
-// GenerateX25519 — выпускает пару ключей для Reality.
-// Reality использует X25519, как и WireGuard, но Xray ждёт base64(URL, no padding).
+// GenerateX25519 creates a Reality keypair encoded as base64url (no padding).
 func GenerateX25519() (privateB64, publicB64 string, err error) {
 	var priv [32]byte
 	if _, err := rand.Read(priv[:]); err != nil {
@@ -28,13 +26,11 @@ func GenerateX25519() (privateB64, publicB64 string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	enc := func(b []byte) string {
-		return base64URLNoPad(b)
-	}
+	enc := func(b []byte) string { return base64URLNoPad(b) }
 	return enc(priv[:]), enc(pub), nil
 }
 
-// GenerateShortID — 8-байтовый shortId в hex (как в Reality).
+// GenerateShortID returns a 16-char hex shortId for Reality.
 func GenerateShortID() (string, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -72,7 +68,6 @@ func base64URLNoPad(b []byte) string {
 	return out.String()
 }
 
-// XrayPeer — peer для рендеринга в config.json.
 type XrayPeer struct {
 	UUID    string
 	Email   string
@@ -80,15 +75,7 @@ type XrayPeer struct {
 	ShortID string
 }
 
-// BuildFullConfig — pure-function построение полного config.json под сервер.
-//
-// Это единственная точка, где формируется Xray-конфиг. Агент ничего не строит,
-// только пишет полученный JSON и рестартует контейнер.
-//
-//	server: domain.Server с Protocol=xray и заполненным ProtocolConfig
-//	peers : ВСЕ active peer'ы этого сервера
-//
-// Возвращает готовый config.json или ошибку, если ProtocolConfig невалиден.
+// BuildFullConfig builds full config.json for one Xray server.
 func BuildFullConfig(server *domain.Server, peers []*domain.Peer) ([]byte, error) {
 	if server.Protocol != domain.ProtoXray {
 		return nil, fmt.Errorf("BuildFullConfig: server is not xray (protocol=%s)", server.Protocol)
@@ -97,6 +84,7 @@ func BuildFullConfig(server *domain.Server, peers []*domain.Peer) ([]byte, error
 	if err != nil {
 		return nil, fmt.Errorf("BuildFullConfig: parse protocol_config: %w", err)
 	}
+
 	xpeers := make([]XrayPeer, 0, len(peers))
 	for _, p := range peers {
 		if !p.Enabled || p.Protocol != domain.ProtoXray || p.XrayUUID == "" {
@@ -110,22 +98,15 @@ func BuildFullConfig(server *domain.Server, peers []*domain.Peer) ([]byte, error
 		if email == "" {
 			email = p.ID.String()
 		}
-		xpeers = append(xpeers, XrayPeer{
-			UUID:    p.XrayUUID,
-			Email:   email,
-			Flow:    flow,
-			ShortID: p.XrayShortID,
-		})
+		xpeers = append(xpeers, XrayPeer{UUID: p.XrayUUID, Email: email, Flow: flow, ShortID: p.XrayShortID})
 	}
+
 	return RenderServerConfig(xc, xpeers)
 }
 
-// RenderServerConfig — генерирует config.json для Xray-core (серверная сторона).
-//
-// Inbound: VLESS на :443 с Reality, dest на легитимный TLS-сервер.
-// Outbound: freedom (direct).
+// RenderServerConfig renders server-side config.json.
 func RenderServerConfig(cfg domain.XrayConfig, peers []XrayPeer) ([]byte, error) {
-	clients := make([]map[string]any, 0, len(peers))
+	clients := make([]map[string]any, 0, len(peers)+len(cfg.SystemClients))
 	for _, p := range peers {
 		flow := p.Flow
 		if flow == "" {
@@ -137,17 +118,25 @@ func RenderServerConfig(cfg domain.XrayConfig, peers []XrayPeer) ([]byte, error)
 			"email": p.Email,
 		})
 	}
+	for _, sc := range cfg.SystemClients {
+		if strings.TrimSpace(sc.ID) == "" {
+			continue
+		}
+		clients = append(clients, map[string]any{
+			"id":    sc.ID,
+			"flow":  ifEmpty(sc.Flow, ifEmpty(cfg.Flow, "xtls-rprx-vision")),
+			"email": ifEmpty(sc.Email, "system"),
+		})
+	}
 
 	port := cfg.InboundPort
 	if port == 0 {
 		port = 443
 	}
-
 	shortIDs := cfg.ShortIDs
 	if len(shortIDs) == 0 {
 		shortIDs = []string{""}
 	}
-
 	dest := cfg.Dest
 	if dest == "" {
 		dest = "www.cloudflare.com:443"
@@ -157,59 +146,113 @@ func RenderServerConfig(cfg domain.XrayConfig, peers []XrayPeer) ([]byte, error)
 		sni = strings.SplitN(dest, ":", 2)[0]
 	}
 
+	outbounds := []any{
+		map[string]any{"protocol": "freedom", "tag": "direct"},
+		map[string]any{"protocol": "blackhole", "tag": "block"},
+	}
+	rules := []any{}
+
+	if cfg.Mode == "cascade" && cfg.Cascade != nil {
+		outbounds = append(outbounds, map[string]any{
+			"protocol": "vless",
+			"tag":      "cascade-upstream",
+			"settings": map[string]any{
+				"vnext": []any{map[string]any{
+					"address": cfg.Cascade.UpstreamHost,
+					"port":    cfg.Cascade.UpstreamPort,
+					"users": []any{map[string]any{
+						"id":         cfg.Cascade.UpstreamAuthUUID,
+						"encryption": "none",
+						"flow":       ifEmpty(cfg.Flow, "xtls-rprx-vision"),
+					}},
+				}},
+			},
+			"streamSettings": map[string]any{
+				"network":  "tcp",
+				"security": "reality",
+				"realitySettings": map[string]any{
+					"serverName":  ifEmpty(cfg.Cascade.UpstreamSNI, cfg.Cascade.UpstreamHost),
+					"publicKey":   cfg.Cascade.UpstreamPubKey,
+					"shortId":     cfg.Cascade.UpstreamShortID,
+					"fingerprint": ifEmpty(cfg.Fingerprint, "chrome"),
+				},
+			},
+		})
+
+		rules = append(rules, map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"})
+		for _, rule := range cfg.Cascade.Rules {
+			if rr := cascadeRoutingRule(rule); rr != nil {
+				rules = append(rules, rr)
+			}
+		}
+		// catch-all fallback for non-matched traffic in cascade mode
+		rules = append(rules, map[string]any{"type": "field", "outboundTag": "cascade-upstream"})
+	} else {
+		rules = append(rules, map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"})
+	}
+
 	out := map[string]any{
-		"log": map[string]any{
-			"loglevel": "warning",
-		},
-		"inbounds": []any{
-			map[string]any{
-				"listen":   "0.0.0.0",
-				"port":     port,
-				"protocol": "vless",
-				"tag":      "vless-reality",
-				"settings": map[string]any{
-					"clients":    clients,
-					"decryption": "none",
-				},
-				"streamSettings": map[string]any{
-					"network":  "tcp",
-					"security": "reality",
-					"realitySettings": map[string]any{
-						"show":         false,
-						"dest":         dest,
-						"xver":         0,
-						"serverNames":  []string{sni},
-						"privateKey":   cfg.PrivateKey,
-						"shortIds":     shortIDs,
-						"fingerprint":  ifEmpty(cfg.Fingerprint, "chrome"),
-					},
-				},
-				"sniffing": map[string]any{
-					"enabled":      true,
-					"destOverride": []string{"http", "tls", "quic"},
+		"log": map[string]any{"loglevel": "warning"},
+		"inbounds": []any{map[string]any{
+			"listen":   "0.0.0.0",
+			"port":     port,
+			"protocol": "vless",
+			"tag":      "vless-reality",
+			"settings": map[string]any{
+				"clients":    clients,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]any{
+				"network":  "tcp",
+				"security": "reality",
+				"realitySettings": map[string]any{
+					"show":        false,
+					"dest":        dest,
+					"xver":        0,
+					"serverNames": []string{sni},
+					"privateKey":  cfg.PrivateKey,
+					"shortIds":    shortIDs,
+					"fingerprint": ifEmpty(cfg.Fingerprint, "chrome"),
 				},
 			},
-		},
-		"outbounds": []any{
-			map[string]any{"protocol": "freedom", "tag": "direct"},
-			map[string]any{"protocol": "blackhole", "tag": "block"},
-		},
-		"routing": map[string]any{
-			"rules": []any{
-				map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
+			"sniffing": map[string]any{
+				"enabled":      true,
+				"destOverride": []string{"http", "tls", "quic"},
 			},
-		},
+		}},
+		"outbounds": outbounds,
+		"routing":   map[string]any{"rules": rules},
 	}
 	return json.MarshalIndent(out, "", "  ")
 }
 
-// RenderVLESSURI — клиентский импорт-link.
-//
-// Формат:
-//
-//	vless://<uuid>@<host>:<port>?type=tcp&security=reality
-//	  &pbk=<server pubkey>&fp=<fingerprint>&sni=<sni>&sid=<shortid>
-//	  &flow=xtls-rprx-vision#<peer-name>
+func cascadeRoutingRule(rule domain.XrayCascadeRule) map[string]any {
+	match := strings.TrimSpace(rule.Match)
+	if match == "" {
+		return nil
+	}
+	tag := "direct"
+	if strings.EqualFold(strings.TrimSpace(rule.Outbound), "proxy") {
+		tag = "cascade-upstream"
+	}
+	out := map[string]any{"type": "field", "outboundTag": tag}
+	if strings.HasPrefix(match, "geoip:") {
+		out["ip"] = []string{match}
+		return out
+	}
+	if strings.HasPrefix(match, "geosite:") || strings.HasPrefix(match, "domain:") {
+		out["domain"] = []string{match}
+		return out
+	}
+	if strings.Contains(match, "/") || strings.Count(match, ".") >= 1 {
+		out["ip"] = []string{match}
+		return out
+	}
+	out["domain"] = []string{match}
+	return out
+}
+
+// RenderVLESSURI renders a client import URI.
 func RenderVLESSURI(server *domain.Server, peer *domain.Peer, view domain.XrayPublic) string {
 	host, port := splitHostPort(server.Endpoint)
 	if view.InboundPort > 0 {

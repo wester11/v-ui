@@ -1,6 +1,15 @@
 import { useAuth } from '../store/auth'
 import type {
-  CreatePeerResponse, CreateServerResponse, Peer, Server, Stats, TokenResponse, User,
+  AuditEntry,
+  CreatePeerResponse,
+  CreateServerResponse,
+  FleetHealthResult,
+  FleetRedeployResult,
+  Peer,
+  Server,
+  Stats,
+  TokenResponse,
+  User,
 } from '../types'
 
 export class ApiError extends Error {
@@ -31,11 +40,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       logout()
     }
   }
+
   if (!resp.ok) {
     let code: string | undefined
     try { code = (await resp.json()).error } catch { /* ignore */ }
     throw new ApiError(resp.status, code)
   }
+
   if (resp.status === 204) return undefined as unknown as T
   const ct = resp.headers.get('Content-Type') || ''
   return ct.includes('application/json')
@@ -56,6 +67,7 @@ export const api = {
         body: JSON.stringify({ refresh_token: refreshToken }),
       }),
   },
+
   me: {
     get: () => request<User>('/api/v1/me'),
     changePassword: (oldPassword: string, newPassword: string) =>
@@ -64,9 +76,11 @@ export const api = {
         body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
       }),
   },
+
   stats: {
     get: () => request<Stats>('/api/v1/stats'),
   },
+
   peers: {
     list: () => request<Peer[]>('/api/v1/peers'),
     create: (server_id: string, name: string, public_key?: string) =>
@@ -74,29 +88,55 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ server_id, name, public_key }),
       }),
-    delete: (id: string) =>
-      request<void>(`/api/v1/peers/${id}`, { method: 'DELETE' }),
-    config: (id: string) =>
-      request<string>(`/api/v1/peers/${id}/config`),
+    delete: (id: string) => request<void>(`/api/v1/peers/${id}`, { method: 'DELETE' }),
+    config: (id: string) => request<string>(`/api/v1/peers/${id}/config`),
   },
+
   servers: {
     list: () => request<Server[]>('/api/v1/servers'),
     create: (body: {
-      name: string; endpoint: string; listen_port: number; subnet: string;
-      dns: string[]; obfs_enabled: boolean
+      name: string
+      protocol: 'wireguard' | 'amneziawg' | 'xray'
+      mode?: 'standalone' | 'cascade'
+      endpoint: string
+      listen_port?: number
+      subnet?: string
+      dns?: string[]
+      obfs_enabled: boolean
+      xray_inbound_port?: number
+      xray_sni?: string
+      xray_dest?: string
+      xray_short_ids?: number
+      xray_fingerprint?: string
+      xray_flow?: string
+      cascade_upstream_id?: string
+      cascade_rules?: Array<{ match: string; outbound: 'direct' | 'proxy' }>
     }) =>
       request<CreateServerResponse>('/api/v1/servers', {
         method: 'POST',
         body: JSON.stringify(body),
       }),
-    delete: (id: string) =>
-      request<void>(`/api/v1/servers/${id}`, { method: 'DELETE' }),
+    delete: (id: string) => request<void>(`/api/v1/servers/${id}`, { method: 'DELETE' }),
   },
+
   users: {
     list: () => request<User[]>('/api/v1/users'),
     create: (body: { email: string; password: string; role: string }) =>
       request<User>('/api/v1/users', { method: 'POST', body: JSON.stringify(body) }),
-    delete: (id: string) =>
-      request<void>(`/api/v1/users/${id}`, { method: 'DELETE' }),
+    delete: (id: string) => request<void>(`/api/v1/users/${id}`, { method: 'DELETE' }),
+  },
+
+  audit: {
+    list: (limit = 100, before?: number) => {
+      const q = new URLSearchParams({ limit: String(limit) })
+      if (before) q.set('before', String(before))
+      return request<AuditEntry[]>(`/api/v1/audit?${q.toString()}`)
+    },
+  },
+
+  fleet: {
+    redeployAll: () => request<FleetRedeployResult[]>('/api/v1/admin/servers/redeploy-all', { method: 'POST' }),
+    health: () => request<FleetHealthResult[]>('/api/v1/admin/servers/health'),
+    redeployServer: (id: string) => request<void>(`/api/v1/admin/servers/${id}/redeploy`, { method: 'POST' }),
   },
 }

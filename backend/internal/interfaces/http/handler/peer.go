@@ -133,4 +133,36 @@ func (h *PeerHandler) Redeploy(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// RedeployAll вЂ” POST /api/v1/admin/servers/redeploy-all.
+// Запускает массовый redeploy для всех Xray-узлов c retry логикой.
+func (h *PeerHandler) RedeployAll(w http.ResponseWriter, r *http.Request) {
+	uid := mw.UserIDFromCtx(r.Context())
+	res, err := h.svc.RedeployAll(r.Context())
+	if err != nil {
+		h.audit.Log(r.Context(), domain.AuditEvent{
+			ActorID: ptrUUID(uid), Action: "server.redeploy_all", Result: "error",
+			IP: mw.ClientIP(r), UserAgent: r.UserAgent(), Meta: map[string]any{"err": err.Error()},
+		})
+		writeErr(w, err)
+		return
+	}
+	h.audit.Log(r.Context(), domain.AuditEvent{
+		ActorID: ptrUUID(uid), Action: "server.redeploy_all", Result: "ok",
+		IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+		Meta: map[string]any{"count": len(res)},
+	})
+	writeJSON(w, http.StatusOK, res)
+}
+
+// Health вЂ” GET /api/v1/admin/servers/health.
+// Возвращает health-report по всем нодам (online/offline/degraded).
+func (h *PeerHandler) Health(w http.ResponseWriter, r *http.Request) {
+	report, err := h.svc.HealthReport(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
 func ptrUUID(u uuid.UUID) *uuid.UUID { return &u }

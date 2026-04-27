@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
 import { useAuth } from '../store/auth'
@@ -17,6 +17,7 @@ export default function Dashboard() {
 
   const load = async () => {
     setError(null)
+    setLoading(true)
     try {
       const tasks: Promise<unknown>[] = []
       if (isStaff) {
@@ -26,7 +27,7 @@ export default function Dashboard() {
       await Promise.all(tasks)
     } catch (e) {
       if (e instanceof ApiError) setError(e.code ?? `HTTP ${e.status}`)
-      else setError('failed to load')
+      else setError('failed to load dashboard')
     } finally {
       setLoading(false)
     }
@@ -40,45 +41,56 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStaff])
 
+  const degraded = useMemo(() => {
+    if (!servers) return 0
+    return servers.filter((s) => s.online === false).length
+  }, [servers])
+
   return (
     <div className="page">
       <div className="page-header">
         <div>
-          <div className="page-title">Welcome back{user?.email ? `, ${user.email.split('@')[0]}` : ''}</div>
-          <div className="page-sub">Overview of your VPN fleet.</div>
+          <div className="page-title">Control Center</div>
+          <div className="page-sub">Operational overview of your VPN fleet and clients.</div>
         </div>
-        <Button variant="ghost" onClick={load} disabled={loading}>↻ Refresh</Button>
+        <Button variant="ghost" onClick={load} disabled={loading}>Refresh</Button>
       </div>
 
       {error && (
-        <div className="card mb-4" style={{ borderColor: 'rgba(248,81,73,0.3)' }}>
-          <span className="text-danger">Error: {error}</span>
+        <div className="state-panel state-error mb-4">
+          <strong>Dashboard unavailable:</strong> {error}
         </div>
       )}
 
       {!isStaff ? (
         <div className="card">
-          <div className="card-header"><div className="card-title">Quick links</div></div>
-          <div className="row">
-            <Link to="/peers"><Button variant="primary">My peers</Button></Link>
-            <Link to="/profile"><Button>Account</Button></Link>
+          <div className="card-header">
+            <div>
+              <div className="card-title">Quick actions</div>
+              <div className="card-sub">Most used controls for regular users.</div>
+            </div>
+          </div>
+          <div className="row" style={{ flexWrap: 'wrap' }}>
+            <Link to="/clients"><Button variant="primary">Manage my clients</Button></Link>
+            <Link to="/configs"><Button>Open configs</Button></Link>
+            <Link to="/profile"><Button>Security profile</Button></Link>
           </div>
         </div>
       ) : (
         <>
           <div className="stats-grid">
-            <StatCard label="Users" value={loading ? '—' : formatNumber(stats?.users ?? 0)} />
-            <StatCard label="Peers" value={loading ? '—' : formatNumber(stats?.peers ?? 0)} tone="violet" />
+            <StatCard label="Users" value={loading ? '...' : formatNumber(stats?.users ?? 0)} />
+            <StatCard label="Clients" value={loading ? '...' : formatNumber(stats?.peers ?? 0)} tone="violet" />
             <StatCard
-              label="Servers"
-              value={loading ? '—' : formatNumber(stats?.servers ?? 0)}
-              meta={stats ? `${stats.servers_online}/${stats.servers} online` : undefined}
-              tone={stats && stats.servers > 0 && stats.servers_online === stats.servers ? 'success' : 'warn'}
+              label="Servers online"
+              value={loading ? '...' : `${stats?.servers_online ?? 0}/${stats?.servers ?? 0}`}
+              meta={loading ? undefined : degraded > 0 ? `${degraded} degraded/offline` : 'all healthy'}
+              tone={degraded > 0 ? 'warn' : 'success'}
             />
             <StatCard
-              label="Total RX"
-              value={loading ? '—' : formatBytes(stats?.bytes_rx_total ?? 0)}
-              meta={stats ? `TX: ${formatBytes(stats.bytes_tx_total)}` : undefined}
+              label="Traffic"
+              value={loading ? '...' : formatBytes((stats?.bytes_rx_total ?? 0) + (stats?.bytes_tx_total ?? 0))}
+              meta={loading ? undefined : `RX ${formatBytes(stats?.bytes_rx_total ?? 0)} / TX ${formatBytes(stats?.bytes_tx_total ?? 0)}`}
               tone="success"
             />
           </div>
@@ -86,17 +98,20 @@ export default function Dashboard() {
           <div className="card">
             <div className="card-header">
               <div>
-                <div className="card-title">Servers</div>
-                <div className="card-sub">Status across the fleet</div>
+                <div className="card-title">Server status</div>
+                <div className="card-sub">Heartbeat, mode and protocol status for each node.</div>
               </div>
-              <Link to="/servers"><Button>Manage</Button></Link>
+              <div className="row">
+                <Link to="/settings"><Button>Fleet ops</Button></Link>
+                <Link to="/servers"><Button variant="primary">Manage servers</Button></Link>
+              </div>
             </div>
             {loading ? (
-              <SkeletonRows rows={4} />
+              <SkeletonRows rows={5} />
             ) : !servers || servers.length === 0 ? (
               <Empty
                 title="No servers yet"
-                sub="Register your first VPN node to start provisioning peers."
+                sub="Register your first VPN node to start provisioning clients."
                 action={<Link to="/servers"><Button variant="primary">Register server</Button></Link>}
               />
             ) : (
@@ -105,9 +120,9 @@ export default function Dashboard() {
                   <thead>
                     <tr>
                       <th>Name</th>
+                      <th>Protocol</th>
+                      <th>Mode</th>
                       <th>Endpoint</th>
-                      <th>Subnet</th>
-                      <th>Obfs</th>
                       <th>Status</th>
                       <th>Last heartbeat</th>
                       <th>Public key</th>
@@ -116,15 +131,17 @@ export default function Dashboard() {
                   <tbody>
                     {servers.map((s) => (
                       <tr key={s.id}>
+                        <td><Link to={`/servers/${s.id}`}><strong>{s.name}</strong></Link></td>
+                        <td><Badge tone="info">{s.protocol}</Badge></td>
                         <td>
-                          <Link to={`/servers/${s.id}`}>{s.name}</Link>
+                          {s.mode === 'cascade'
+                            ? <Badge tone="violet">cascade</Badge>
+                            : <Badge>standalone</Badge>}
                         </td>
                         <td><code>{s.endpoint}</code></td>
-                        <td><code>{s.subnet}</code></td>
-                        <td>{s.obfs_enabled ? <Badge tone="info">on</Badge> : <Badge>off</Badge>}</td>
                         <td><StatusDot online={s.online} /></td>
                         <td className="text-dim">{formatRelative(s.last_heartbeat)}</td>
-                        <td><code>{maskKey(s.public_key)}</code></td>
+                        <td><code>{maskKey(s.public_key ?? s.xray_public_key)}</code></td>
                       </tr>
                     ))}
                   </tbody>

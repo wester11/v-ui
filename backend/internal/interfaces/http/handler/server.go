@@ -30,6 +30,7 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	res, err := h.svc.Register(r.Context(), usecase.RegisterServerInput{
 		Name:            req.Name,
 		Protocol:        domain.Protocol(req.Protocol),
+		Mode:            req.Mode,
 		Endpoint:        req.Endpoint,
 		ListenPort:      req.ListenPort,
 		TCPPort:         req.TCPPort,
@@ -43,6 +44,16 @@ func (h *ServerHandler) Create(w http.ResponseWriter, r *http.Request) {
 		XrayShortIDsN:   req.XrayShortIDsN,
 		XrayFingerprint: req.XrayFingerprint,
 		XrayFlow:        req.XrayFlow,
+		CascadeUpstreamID: req.CascadeUpstreamID,
+		CascadeRules: func() []domain.XrayCascadeRule {
+			out := make([]domain.XrayCascadeRule, 0, len(req.CascadeRules))
+			for _, r := range req.CascadeRules {
+				out = append(out, domain.XrayCascadeRule{
+					Match: r.Match, Outbound: r.Outbound,
+				})
+			}
+			return out
+		}(),
 	})
 	if err != nil {
 		writeErr(w, err)

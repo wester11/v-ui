@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 
@@ -6,23 +6,37 @@ interface NavDef {
   to: string
   label: string
   icon: string
+  section: 'overview' | 'operations' | 'security' | 'account'
   roles?: Array<'admin' | 'operator' | 'user'>
 }
 
 const NAV: NavDef[] = [
-  { to: '/',         label: 'Dashboard', icon: '◧' },
-  { to: '/peers',    label: 'Peers',     icon: '◍' },
-  { to: '/servers',  label: 'Servers',   icon: '◈', roles: ['admin', 'operator'] },
-  { to: '/users',    label: 'Users',     icon: '◉', roles: ['admin', 'operator'] },
-  { to: '/profile',  label: 'Profile',   icon: '◎' },
+  { to: '/', label: 'Dashboard', icon: 'DB', section: 'overview' },
+  { to: '/servers', label: 'Servers', icon: 'SV', section: 'operations', roles: ['admin', 'operator'] },
+  { to: '/clients', label: 'Clients', icon: 'CL', section: 'operations' },
+  { to: '/configs', label: 'Configs', icon: 'CF', section: 'operations' },
+  { to: '/logs', label: 'Logs / Audit', icon: 'LG', section: 'security', roles: ['admin'] },
+  { to: '/settings', label: 'Settings', icon: 'ST', section: 'security', roles: ['admin', 'operator'] },
+  { to: '/users', label: 'Users', icon: 'US', section: 'account', roles: ['admin', 'operator'] },
+  { to: '/profile', label: 'Profile', icon: 'ME', section: 'account' },
 ]
 
+const SECTION_TITLES: Record<NavDef['section'], string> = {
+  overview: 'Overview',
+  operations: 'Operations',
+  security: 'Security',
+  account: 'Account',
+}
+
 const TITLES: Record<string, string> = {
-  '/':        'Dashboard',
-  '/peers':   'Peers',
+  '/': 'Fleet Dashboard',
+  '/clients': 'Clients',
   '/servers': 'Servers',
-  '/users':   'Users',
+  '/users': 'Users',
   '/profile': 'Profile',
+  '/configs': 'Configs / Access',
+  '/logs': 'Logs / Audit',
+  '/settings': 'Settings',
 }
 
 export default function Layout() {
@@ -42,12 +56,26 @@ export default function Layout() {
   }, [])
 
   const role = user?.role ?? 'user'
-  const visible = NAV.filter((n) => !n.roles || n.roles.includes(role))
+  const visible = useMemo(
+    () => NAV.filter((n) => !n.roles || n.roles.includes(role)),
+    [role],
+  )
+
+  const grouped = useMemo(() => {
+    const buckets: Record<NavDef['section'], NavDef[]> = {
+      overview: [],
+      operations: [],
+      security: [],
+      account: [],
+    }
+    for (const item of visible) buckets[item.section].push(item)
+    return buckets
+  }, [visible])
 
   let title = TITLES[loc.pathname] ?? ''
-  if (!title && loc.pathname.startsWith('/servers/')) title = 'Server'
+  if (!title && loc.pathname.startsWith('/servers/')) title = 'Server Detail'
 
-  const initial = (user?.email ?? '?').slice(0, 1)
+  const initial = (user?.email ?? '?').slice(0, 1).toUpperCase()
 
   const handleLogout = () => {
     logout()
@@ -55,36 +83,54 @@ export default function Layout() {
   }
 
   return (
-    <div className="app">
+    <div className="app shell-bg">
       <aside className="sidebar">
         <div className="sidebar-brand">
           <span className="brand-dot" />
-          void-wg
+          <div className="stack-sm" style={{ gap: 2 }}>
+            <strong>void-wg</strong>
+            <span className="text-xs text-mute">Control plane</span>
+          </div>
         </div>
+
         <nav className="sidebar-nav">
-          {visible.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              end={n.to === '/'}
-              className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
-            >
-              <span className="nav-icon">{n.icon}</span>
-              {n.label}
-            </NavLink>
+          {(Object.keys(grouped) as Array<NavDef['section']>).map((section) => (
+            grouped[section].length > 0 ? (
+              <div key={section} className="sidebar-section">
+                <div className="sidebar-section-title">{SECTION_TITLES[section]}</div>
+                {grouped[section].map((n) => (
+                  <NavLink
+                    key={n.to}
+                    to={n.to}
+                    end={n.to === '/'}
+                    className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                  >
+                    <span className="nav-icon">{n.icon}</span>
+                    <span>{n.label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            ) : null
           ))}
         </nav>
-        <div className="sidebar-footer">v0.1.0 · {role}</div>
+
+        <div className="sidebar-footer">
+          <span className="badge badge-info">{role}</span>
+          <span>v0.2.0</span>
+        </div>
       </aside>
 
       <header className="topbar">
-        <div className="topbar-title">{title}</div>
+        <div>
+          <div className="topbar-title">{title}</div>
+          <div className="topbar-sub">Production-oriented VPN orchestration</div>
+        </div>
         <div className="topbar-right">
           <div className="user-menu" ref={ref}>
             <button className="user-button" onClick={() => setOpen((v) => !v)}>
               <span className="user-avatar">{initial}</span>
-              <span className="truncate" style={{ maxWidth: 160 }}>{user?.email ?? '…'}</span>
-              <span className="text-mute">▾</span>
+              <span className="truncate" style={{ maxWidth: 200 }}>{user?.email ?? '...'}</span>
+              <span className="text-mute">v</span>
             </button>
             {open && (
               <div className="user-dropdown">
@@ -96,10 +142,10 @@ export default function Layout() {
                 </div>
                 <div className="dropdown-divider" />
                 <button className="dropdown-item" onClick={() => { setOpen(false); nav('/profile') }}>
-                  ◎ Profile
+                  Profile
                 </button>
                 <button className="dropdown-item" onClick={handleLogout}>
-                  ⏻ Sign out
+                  Sign out
                 </button>
               </div>
             )}

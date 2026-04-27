@@ -9,6 +9,9 @@ import Servers from './pages/Servers'
 import ServerDetail from './pages/ServerDetail'
 import Users from './pages/Users'
 import Profile from './pages/Profile'
+import Configs from './pages/Configs'
+import Logs from './pages/Logs'
+import Settings from './pages/Settings'
 
 export default function App() {
   return (
@@ -17,9 +20,13 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/peers" element={<Peers />} />
+          <Route path="/clients" element={<Peers />} />
+          <Route path="/peers" element={<Navigate to="/clients" replace />} />
           <Route path="/servers" element={<Servers />} />
           <Route path="/servers/:id" element={<ServerDetail />} />
+          <Route path="/configs" element={<Configs />} />
+          <Route path="/logs" element={<Logs />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/users" element={<Users />} />
           <Route path="/profile" element={<Profile />} />
         </Route>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -13,7 +14,7 @@ import (
 	"github.com/voidwg/control/pkg/xray"
 )
 
-// PeerService — protocol-aware: WG/AWG vs Xray.
+// PeerService is protocol-aware: WG/AWG and Xray.
 type PeerService struct {
 	peers   port.PeerRepository
 	servers port.ServerRepository
@@ -24,16 +25,30 @@ func NewPeerService(p port.PeerRepository, s port.ServerRepository, a port.Agent
 	return &PeerService{peers: p, servers: s, agents: a}
 }
 
-// CreatePeerInput — для wireguard/amneziawg обязателен PublicKey;
-// для xray PublicKey игнорируется, сервис генерит UUID и берёт shortID из пула.
 type CreatePeerInput struct {
 	UserID    uuid.UUID
 	ServerID  uuid.UUID
 	Name      string
-	PublicKey string // только WG/AWG
+	PublicKey string // WG/AWG only
 }
 
-// Create — создаёт peer'а, branching по Server.Protocol.
+type FleetRedeployResult struct {
+	ServerID uuid.UUID `json:"server_id"`
+	Name     string    `json:"name"`
+	Status   string    `json:"status"`
+	Retries  int       `json:"retries"`
+	Error    string    `json:"error,omitempty"`
+}
+
+type FleetHealthResult struct {
+	ServerID      uuid.UUID  `json:"server_id"`
+	Name          string     `json:"name"`
+	Protocol      string     `json:"protocol"`
+	Status        string     `json:"status"`
+	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
+	Error         string     `json:"error,omitempty"`
+}
+
 func (s *PeerService) Create(ctx context.Context, in CreatePeerInput) (*domain.Peer, string, error) {
 	srv, err := s.servers.GetByID(ctx, in.ServerID)
 	if err != nil {
@@ -95,19 +110,14 @@ func (s *PeerService) createXray(ctx context.Context, srv *domain.Server, in Cre
 	if err := s.peers.Create(ctx, peer); err != nil {
 		return nil, "", err
 	}
-	// Stateless deploy: пересобираем ВЕСЬ config.json и пушим агенту.
-	// Agent просто пишет файл и рестартует контейнер (никакого in-memory peer-state).
 	cfgURI := xray.RenderVLESSURI(srv, peer, xc.PublicView(shortID))
 	if err := s.deployXray(ctx, srv); err != nil {
-		// peer создан в БД — admin может потом нажать /api/v1/admin/servers/{id}/redeploy
 		return peer, cfgURI, err
 	}
 	return peer, cfgURI, nil
 }
 
-// deployXray — собирает полный xray config.json и пушит агенту.
-// Безопасно вызывать idempotent (например, при добавлении/удалении peer'а
-// или при ручном /redeploy).
+// deployXray rebuilds full config.json and pushes it to the node agent.
 func (s *PeerService) deployXray(ctx context.Context, srv *domain.Server) error {
 	allPeers, err := s.peers.ListByServer(ctx, srv.ID)
 	if err != nil {
@@ -120,17 +130,89 @@ func (s *PeerService) deployXray(ctx context.Context, srv *domain.Server) error 
 	return s.agents.DeployConfig(ctx, srv, cfg)
 }
 
-// Redeploy — пересобрать config xray-сервера и запушить.
-// Public-метод для admin-endpoint /api/v1/admin/servers/{id}/redeploy.
 func (s *PeerService) Redeploy(ctx context.Context, serverID uuid.UUID) error {
 	srv, err := s.servers.GetByID(ctx, serverID)
 	if err != nil {
 		return err
 	}
 	if srv.Protocol != domain.ProtoXray {
-		return nil // для WG/AWG нечего пересобирать
+		return nil
 	}
-	return s.deployXray(ctx, srv)
+	return s.deployWithRetry(ctx, srv, 3)
+}
+
+func (s *PeerService) RedeployAll(ctx context.Context) ([]FleetRedeployResult, error) {
+	servers, err := s.servers.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FleetRedeployResult, 0, len(servers))
+	for _, srv := range servers {
+		if srv.Protocol != domain.ProtoXray {
+			continue
+		}
+		result := FleetRedeployResult{ServerID: srv.ID, Name: srv.Name, Status: "ok", Retries: 1}
+		if err := s.deployWithRetry(ctx, srv, 3); err != nil {
+			result.Status = "error"
+			result.Error = err.Error()
+			result.Retries = 3
+		}
+		out = append(out, result)
+	}
+	return out, nil
+}
+
+func (s *PeerService) HealthReport(ctx context.Context) ([]FleetHealthResult, error) {
+	servers, err := s.servers.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FleetHealthResult, 0, len(servers))
+	for _, srv := range servers {
+		status := "offline"
+		item := FleetHealthResult{
+			ServerID:      srv.ID,
+			Name:          srv.Name,
+			Protocol:      string(srv.Protocol),
+			Status:        status,
+			LastHeartbeat: srv.LastHeartbeat,
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		err := s.agents.Health(probeCtx, srv)
+		cancel()
+		if err == nil {
+			if srv.Online {
+				item.Status = "online"
+			} else {
+				item.Status = "degraded"
+			}
+		} else {
+			item.Error = err.Error()
+			if srv.Online {
+				item.Status = "degraded"
+			}
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (s *PeerService) deployWithRetry(ctx context.Context, srv *domain.Server, attempts int) error {
+	if attempts <= 1 {
+		return s.deployXray(ctx, srv)
+	}
+	var last error
+	for i := 0; i < attempts; i++ {
+		if err := s.deployXray(ctx, srv); err == nil {
+			return nil
+		} else {
+			last = err
+		}
+		if i < attempts-1 {
+			time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
+		}
+	}
+	return last
 }
 
 func (s *PeerService) Revoke(ctx context.Context, peerID uuid.UUID) error {
@@ -143,13 +225,11 @@ func (s *PeerService) Revoke(ctx context.Context, peerID uuid.UUID) error {
 		return err
 	}
 	if srv.Protocol == domain.ProtoXray {
-		// stateless: удалить из БД -> пересобрать полный config -> deploy.
 		if err := s.peers.Delete(ctx, peerID); err != nil {
 			return err
 		}
 		return s.deployXray(ctx, srv)
 	}
-	// WG/AWG — runtime mutation
 	if err := s.agents.RevokePeer(ctx, srv, p.ID); err != nil {
 		return err
 	}
@@ -160,10 +240,6 @@ func (s *PeerService) ListByUser(ctx context.Context, userID uuid.UUID) ([]*doma
 	return s.peers.ListByUser(ctx, userID)
 }
 
-// Config — рендерит клиентский конфиг под протокол peer'а.
-//
-//	WG/AWG:  wg-quick stub (без PrivateKey — клиент подставит свой)
-//	Xray:    vless:// URI
 func (s *PeerService) Config(ctx context.Context, peerID uuid.UUID) (string, error) {
 	p, err := s.peers.GetByID(ctx, peerID)
 	if err != nil {
@@ -224,8 +300,6 @@ func validBase64Key(k string) bool {
 	return true
 }
 
-// pickShortID — детерминированный выбор по хэшу UUID, чтобы при перерендеринге
-// config.json id не "прыгал" между shortId.
 func pickShortID(pool []string, key string) string {
 	if len(pool) == 0 {
 		return ""
@@ -236,4 +310,3 @@ func pickShortID(pool []string, key string) string {
 	}
 	return pool[int(h)%len(pool)]
 }
-

@@ -1,4 +1,4 @@
-// Package dto — DTO между REST-слоем и use-case'ами.
+// Package dto defines HTTP DTOs between handlers and use-cases.
 package dto
 
 import (
@@ -83,23 +83,31 @@ type AWGParamsDTO struct {
 	H4   uint32 `json:"H4"`
 }
 
+type CascadeRuleDTO struct {
+	Match    string `json:"match"`
+	Outbound string `json:"outbound"`
+}
+
 type ServerResponse struct {
-	ID            uuid.UUID    `json:"id"`
-	Name          string       `json:"name"`
-	Protocol      string       `json:"protocol"`
-	Endpoint      string       `json:"endpoint"`
-	PublicKey     string       `json:"public_key,omitempty"`
-	ListenPort    uint16       `json:"listen_port,omitempty"`
-	TCPPort       uint16       `json:"tcp_port,omitempty"`
-	TLSPort       uint16       `json:"tls_port,omitempty"`
-	Subnet        string       `json:"subnet,omitempty"`
-	ObfsEnabled   bool         `json:"obfs_enabled"`
-	AWG           AWGParamsDTO `json:"awg,omitempty"`
-	XrayInbound   uint16       `json:"xray_inbound_port,omitempty"`
-	XraySNI       string       `json:"xray_sni,omitempty"`
-	XrayPubKey    string       `json:"xray_public_key,omitempty"`
-	Online        bool         `json:"online"`
-	LastHeartbeat *time.Time   `json:"last_heartbeat,omitempty"`
+	ID                uuid.UUID        `json:"id"`
+	Name              string           `json:"name"`
+	Protocol          string           `json:"protocol"`
+	Mode              string           `json:"mode,omitempty"`
+	Endpoint          string           `json:"endpoint"`
+	PublicKey         string           `json:"public_key,omitempty"`
+	ListenPort        uint16           `json:"listen_port,omitempty"`
+	TCPPort           uint16           `json:"tcp_port,omitempty"`
+	TLSPort           uint16           `json:"tls_port,omitempty"`
+	Subnet            string           `json:"subnet,omitempty"`
+	ObfsEnabled       bool             `json:"obfs_enabled"`
+	AWG               AWGParamsDTO     `json:"awg,omitempty"`
+	XrayInbound       uint16           `json:"xray_inbound_port,omitempty"`
+	XraySNI           string           `json:"xray_sni,omitempty"`
+	XrayPubKey        string           `json:"xray_public_key,omitempty"`
+	CascadeUpstreamID string           `json:"cascade_upstream_id,omitempty"`
+	CascadeRules      []CascadeRuleDTO `json:"cascade_rules,omitempty"`
+	Online            bool             `json:"online"`
+	LastHeartbeat     *time.Time       `json:"last_heartbeat,omitempty"`
 }
 
 func ServerFromDomain(s *domain.Server) ServerResponse {
@@ -115,6 +123,7 @@ func ServerFromDomain(s *domain.Server) ServerResponse {
 		ObfsEnabled:   s.ObfsEnabled,
 		Online:        s.Online,
 		LastHeartbeat: s.LastHeartbeat,
+		Mode:          "standalone",
 	}
 	if s.Subnet.IsValid() {
 		resp.Subnet = s.Subnet.String()
@@ -130,7 +139,16 @@ func ServerFromDomain(s *domain.Server) ServerResponse {
 		if xc, err := domain.XrayConfigFromJSON(s.ProtocolConfig); err == nil {
 			resp.XrayInbound = xc.InboundPort
 			resp.XraySNI = xc.SNI
-			resp.XrayPubKey = xc.PublicKey // public — можно показать в UI
+			resp.XrayPubKey = xc.PublicKey
+			if xc.Mode != "" {
+				resp.Mode = xc.Mode
+			}
+			if xc.Cascade != nil {
+				resp.CascadeUpstreamID = xc.Cascade.UpstreamServerID
+				for _, r := range xc.Cascade.Rules {
+					resp.CascadeRules = append(resp.CascadeRules, CascadeRuleDTO{Match: r.Match, Outbound: r.Outbound})
+				}
+			}
 		}
 	}
 	return resp
@@ -138,7 +156,8 @@ func ServerFromDomain(s *domain.Server) ServerResponse {
 
 type CreateServerRequest struct {
 	Name        string   `json:"name"`
-	Protocol    string   `json:"protocol"` // wireguard | amneziawg | xray (default: wireguard)
+	Protocol    string   `json:"protocol"` // wireguard | amneziawg | xray
+	Mode        string   `json:"mode,omitempty"` // standalone | cascade
 	Endpoint    string   `json:"endpoint"`
 	ListenPort  uint16   `json:"listen_port"`
 	TCPPort     uint16   `json:"tcp_port"`
@@ -147,23 +166,26 @@ type CreateServerRequest struct {
 	DNS         []string `json:"dns"`
 	ObfsEnabled bool     `json:"obfs_enabled"`
 
-	// Xray-only (если protocol=xray):
+	// Xray-only
 	XrayInboundPort uint16 `json:"xray_inbound_port,omitempty"`
 	XraySNI         string `json:"xray_sni,omitempty"`
 	XrayDest        string `json:"xray_dest,omitempty"`
 	XrayShortIDsN   int    `json:"xray_short_ids,omitempty"`
 	XrayFingerprint string `json:"xray_fingerprint,omitempty"`
 	XrayFlow        string `json:"xray_flow,omitempty"`
+
+	// Cascade-only (xray mode=cascade)
+	CascadeUpstreamID string           `json:"cascade_upstream_id,omitempty"`
+	CascadeRules      []CascadeRuleDTO `json:"cascade_rules,omitempty"`
 }
 
-// CreateServerResponse — отдаётся ОДИН РАЗ при регистрации:
-// agent_token + mTLS-материал. После этого CA/cert/key больше не получить.
+// CreateServerResponse is returned once at registration time with agent secrets.
 type CreateServerResponse struct {
 	ServerResponse
 	AgentToken string `json:"agent_token"`
-	AgentCA    string `json:"agent_ca"`   // PEM, ставится в trusted store агента
-	AgentCert  string `json:"agent_cert"` // PEM, mTLS client cert
-	AgentKey   string `json:"agent_key"`  // PEM, приватник client cert
+	AgentCA    string `json:"agent_ca"`
+	AgentCert  string `json:"agent_cert"`
+	AgentKey   string `json:"agent_key"`
 }
 
 // ===== Peer =====
@@ -174,8 +196,8 @@ type PeerResponse struct {
 	ServerID      uuid.UUID  `json:"server_id"`
 	Protocol      string     `json:"protocol"`
 	Name          string     `json:"name"`
-	PublicKey     string     `json:"public_key,omitempty"` // WG/AWG only
-	XrayUUID      string     `json:"xray_uuid,omitempty"`  // Xray only
+	PublicKey     string     `json:"public_key,omitempty"`
+	XrayUUID      string     `json:"xray_uuid,omitempty"`
 	XrayShortID   string     `json:"xray_short_id,omitempty"`
 	AssignedIP    string     `json:"assigned_ip,omitempty"`
 	Enabled       bool       `json:"enabled"`
@@ -207,10 +229,6 @@ func PeerFromDomain(p *domain.Peer) PeerResponse {
 	return r
 }
 
-// CreatePeerRequest — protocol-aware.
-//
-//	WG/AWG:  обязателен public_key (X25519, base64).
-//	Xray:    public_key игнорируется; сервис генерит UUID и shortID.
 type CreatePeerRequest struct {
 	ServerID  uuid.UUID `json:"server_id"`
 	Name      string    `json:"name"`
@@ -219,7 +237,7 @@ type CreatePeerRequest struct {
 
 type CreatePeerResponse struct {
 	Peer       PeerResponse `json:"peer"`
-	ConfigStub string       `json:"config"` // wg-quick stub (без PrivateKey — клиент подставит сам)
+	ConfigStub string       `json:"config"`
 }
 
 // ===== Invite =====
@@ -233,7 +251,7 @@ type CreateInviteRequest struct {
 type InviteResponse struct {
 	ID            uuid.UUID  `json:"id"`
 	Token         string     `json:"token"`
-	URL           string     `json:"url"` // /redeem/<token>
+	URL           string     `json:"url"`
 	ServerID      uuid.UUID  `json:"server_id"`
 	SuggestedName string     `json:"suggested_name"`
 	ExpiresAt     time.Time  `json:"expires_at"`
@@ -254,9 +272,6 @@ func InviteFromDomain(i *domain.Invite, baseURL string) InviteResponse {
 	}
 }
 
-// InviteLookupResponse — публичный (без auth) ответ на GET /api/v1/invites/<token>.
-// Содержит метаданные сервера, нужные клиенту для генерации конфига.
-// public_key самого peer'а ещё не известен — клиент сгенерит и пришлёт через Redeem.
 type InviteLookupResponse struct {
 	Endpoint    string       `json:"endpoint"`
 	PublicKey   string       `json:"public_key"`

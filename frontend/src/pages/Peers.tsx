@@ -53,16 +53,16 @@ export default function Peers() {
     setCreateBusy(true)
     try {
       const srv = servers.find((s) => s.id === serverID)
-      // WG/AWG: client-side keygen (TODO: web-crypto X25519). Для MVP оставляем
-      // operator-only flow без public_key — sandbox-keygen выполнит сервер
-      // на стадии invite-redeem (Phase 4). Для xray ключи не нужны.
-      const resp = await api.peers.create(serverID, name.trim(),
-        srv?.protocol === 'xray' ? undefined : (await ensurePeerKeyPair()))
+      const resp = await api.peers.create(
+        serverID,
+        name.trim(),
+        srv?.protocol === 'xray' ? undefined : (await ensurePeerKeyPair()),
+      )
       setRecent(resp)
       setName('')
       setCreating(false)
       await reload()
-      toast.success('Peer created')
+      toast.success('Client created')
     } catch (err) {
       setCreateErr(err instanceof ApiError ? (err.code ?? `HTTP ${err.status}`) : 'create failed')
     } finally {
@@ -70,13 +70,8 @@ export default function Peers() {
     }
   }
 
-  // ensurePeerKeyPair — для не-xray протоколов нужен X25519 public_key.
-  // В UI-flow генерация ключей делается через invite-redeem (Phase 4).
-  // Здесь ставим placeholder, чтобы серверная валидация не сломалась —
-  // для production-flow пользуйтесь /api/v1/admin/invites вместо этого.
+  // Placeholder: full browser X25519 generation can be wired in invite-flow.
   async function ensurePeerKeyPair(): Promise<string> {
-    // Browsers' SubtleCrypto не поддерживает X25519 везде; делегируем
-    // в invite-flow. Тут возвращаем 32-байтовый zero-key как дев-заглушку.
     return 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
   }
 
@@ -85,7 +80,7 @@ export default function Peers() {
     setBusy(true)
     try {
       await api.peers.delete(confirm.id)
-      toast.success('Peer revoked')
+      toast.success('Client revoked')
       setConfirm(null)
       await reload()
     } catch (err) {
@@ -108,50 +103,45 @@ export default function Peers() {
     <div className="page">
       <div className="page-header">
         <div>
-          <div className="page-title">Peers</div>
-          <div className="page-sub">WireGuard peers provisioned for your account.</div>
+          <div className="page-title">Clients</div>
+          <div className="page-sub">Provision client profiles and manage active access.</div>
         </div>
-        <div className="row">
+        <div className="row" style={{ flexWrap: 'wrap' }}>
           <input
             className="search-input"
-            placeholder="Search by name, IP, key…"
+            placeholder="Search by name, IP, key..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
           <Button variant="primary" onClick={() => setCreating(true)} disabled={!servers.length}>
-            + New peer
+            + New client
           </Button>
         </div>
       </div>
 
       {recent && (
-        <div className="card mb-4" style={{ borderColor: 'rgba(63,185,80,0.3)' }}>
+        <div className="card mb-4" style={{ borderColor: 'rgba(31,157,102,0.35)' }}>
           <div className="card-header">
             <div>
-              <div className="card-title">✓ Peer "{recent.peer.name}" provisioned</div>
+              <div className="card-title">Client "{recent.peer.name}" is ready</div>
               <div className="card-sub">
                 {recent.peer.protocol === 'xray'
-                  ? 'Импортируйте VLESS-link в клиент (v2rayN / v2rayNG / Streisand).'
-                  : 'Save the config — the private key is shown only once.'}
+                  ? 'Import this VLESS URI in your Xray client app.'
+                  : 'Save config immediately. Private key is shown only once.'}
               </div>
             </div>
             <div className="row">
-              <Button onClick={() => copyToClipboard(recent.config, 'Copied')}>⧉ Copy</Button>
+              <Button onClick={() => copyToClipboard(recent.config, 'Copied')}>Copy</Button>
               {recent.peer.protocol !== 'xray' && (
-                <Button
-                  variant="primary"
-                  onClick={() => downloadFile(`${recent.peer.name}.conf`, recent.config)}
-                >
-                  ↓ Download .conf
+                <Button variant="primary" onClick={() => downloadFile(`${recent.peer.name}.conf`, recent.config)}>
+                  Download .conf
                 </Button>
               )}
-              <IconButton onClick={() => setRecent(null)} title="Dismiss">✕</IconButton>
+              <IconButton onClick={() => setRecent(null)} title="Dismiss">x</IconButton>
             </div>
           </div>
           <div className="row" style={{ alignItems: 'flex-start' }}>
-            <div className="qr-box">
-              <QRCodeSVG value={recent.config} size={180} level="M" />
-            </div>
+            <div className="qr-box"><QRCodeSVG value={recent.config} size={180} level="M" /></div>
             <pre style={{ flex: 1, wordBreak: 'break-all' }}>{recent.config}</pre>
           </div>
         </div>
@@ -159,16 +149,12 @@ export default function Peers() {
 
       <div className="card">
         {peers === null ? (
-          <div className="stack">
-            {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} height={42} />)}
-          </div>
+          <div className="stack">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} height={42} />)}</div>
         ) : filtered && filtered.length === 0 ? (
           <Empty
-            title={search ? 'No peers match your search' : 'No peers yet'}
-            sub={search ? 'Try a different query.' : 'Provision your first peer to get a wg-quick config.'}
-            action={!search && servers.length > 0 ? (
-              <Button variant="primary" onClick={() => setCreating(true)}>+ New peer</Button>
-            ) : undefined}
+            title={search ? 'No clients match your search' : 'No clients yet'}
+            sub={search ? 'Try a different query.' : 'Provision first client to issue config.'}
+            action={!search && servers.length > 0 ? <Button variant="primary" onClick={() => setCreating(true)}>+ New client</Button> : undefined}
           />
         ) : (
           <div className="table-wrap">
@@ -191,15 +177,11 @@ export default function Peers() {
                   return (
                     <tr key={p.id}>
                       <td><strong>{p.name}</strong></td>
-                      <td><code>{p.assigned_ip}</code></td>
+                      <td><code>{p.assigned_ip ?? '-'}</code></td>
                       <td>{srv?.name ?? <code>{maskKey(p.server_id)}</code>}</td>
-                      <td>
-                        {p.enabled ? <Badge tone="success">enabled</Badge> : <Badge tone="warn">disabled</Badge>}
-                      </td>
+                      <td>{p.enabled ? <Badge tone="success">enabled</Badge> : <Badge tone="warn">disabled</Badge>}</td>
                       <td className="text-dim">{formatRelative(p.last_handshake)}</td>
-                      <td className="text-mono text-dim">
-                        ↓ {formatBytes(p.bytes_rx)} · ↑ {formatBytes(p.bytes_tx)}
-                      </td>
+                      <td className="text-mono text-dim">RX {formatBytes(p.bytes_rx)} / TX {formatBytes(p.bytes_tx)}</td>
                       <td><code>{maskKey(p.public_key)}</code></td>
                       <td className="actions">
                         <div className="row-end">
@@ -216,17 +198,14 @@ export default function Peers() {
         )}
       </div>
 
-      {/* Create peer modal */}
       <Modal
         open={creating}
         onClose={() => setCreating(false)}
-        title="New peer"
+        title="New client"
         footer={
           <>
             <Button variant="ghost" onClick={() => setCreating(false)}>Cancel</Button>
-            <Button variant="primary" onClick={create as never} loading={createBusy}>
-              Provision
-            </Button>
+            <Button variant="primary" onClick={create as never} loading={createBusy}>Provision</Button>
           </>
         }
       >
@@ -246,9 +225,7 @@ export default function Peers() {
             disabled={!servers.length}
           >
             {servers.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name} — {s.endpoint}
-              </option>
+              <option key={s.id} value={s.id}>{s.name} - {s.endpoint}</option>
             ))}
           </Select>
           {createErr && <div className="text-danger text-sm">{createErr}</div>}
@@ -256,29 +233,21 @@ export default function Peers() {
         </form>
       </Modal>
 
-      {/* View config modal */}
       {view && (
         <Modal
           open
           onClose={() => setView(null)}
-          title={`${view.peer.name} — wg-quick config`}
+          title={`${view.peer.name} - config`}
           footer={
             <>
-              <Button onClick={() => copyToClipboard(view.config, 'Config copied')}>⧉ Copy</Button>
-              <Button
-                variant="primary"
-                onClick={() => downloadFile(`${view.peer.name}.conf`, view.config)}
-              >
-                ↓ Download
-              </Button>
+              <Button onClick={() => copyToClipboard(view.config, 'Config copied')}>Copy</Button>
+              <Button variant="primary" onClick={() => downloadFile(`${view.peer.name}.conf`, view.config)}>Download</Button>
             </>
           }
         >
           <div className="stack">
             <div className="row" style={{ justifyContent: 'center' }}>
-              <div className="qr-box">
-                <QRCodeSVG value={view.config} size={220} level="M" />
-              </div>
+              <div className="qr-box"><QRCodeSVG value={view.config} size={220} level="M" /></div>
             </div>
             <pre>{view.config}</pre>
           </div>
@@ -287,10 +256,8 @@ export default function Peers() {
 
       <ConfirmDialog
         open={!!confirm}
-        title="Revoke peer?"
-        body={
-          <>This will remove peer <strong>{confirm?.name}</strong> from the server. This action cannot be undone.</>
-        }
+        title="Revoke client?"
+        body={<>Client <strong>{confirm?.name}</strong> will be removed from the server.</>}
         confirmText="Revoke"
         destructive
         loading={busy}
