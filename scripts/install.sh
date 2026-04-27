@@ -19,22 +19,24 @@ OBFS_PORT="${OBFS_PORT:-51821}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@local}"
 LOG_FILE="${LOG_FILE:-/var/log/void-wg-install.log}"
 
-# TLS — может задаваться через env (для не-интерактивного режима):
-#   TLS_MODE=selfsigned                                — самоподписанный по IP
-#   TLS_MODE=letsencrypt PANEL_DOMAIN=vpn.example.com LE_EMAIL=ops@example.com
-#   TLS_MODE=none                                       — HTTP-only
+# TLS — опциональные env'ы для не-интерактивного режима:
+#   TLS_MODE=selfsigned                              — IP, self-signed
+#   TLS_MODE=letsencrypt PANEL_DOMAIN=vpn.example.com — Let's Encrypt
 TLS_MODE="${TLS_MODE:-}"
 PANEL_DOMAIN="${PANEL_DOMAIN:-}"
-LE_EMAIL="${LE_EMAIL:-}"
 
 # ----- pretty -----
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; BOLD='\033[1m'; NC='\033[0m'
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 ts()    { date '+%Y-%m-%d %H:%M:%S'; }
-log()   { printf "${GREEN}[%s] %s${NC}\n" "$(ts)" "$*" | tee -a "$LOG_FILE"; }
-warn()  { printf "${YELLOW}[%s] WARN: %s${NC}\n" "$(ts)" "$*" | tee -a "$LOG_FILE"; }
-err()   { printf "${RED}[%s] ERROR: %s${NC}\n" "$(ts)" "$*" | tee -a "$LOG_FILE" >&2; }
+log()   { printf "${GREEN}[%s] [INFO] %s${NC}\n" "$(ts)" "$*" | tee -a "$LOG_FILE"; }
+ok()    { printf "${GREEN}[%s] [ OK ] %s${NC}\n" "$(ts)" "$*" | tee -a "$LOG_FILE"; }
+warn()  { printf "${YELLOW}[%s] [WARN] %s${NC}\n" "$(ts)" "$*" | tee -a "$LOG_FILE"; }
+err()   { printf "${RED}[%s] [ERROR] %s${NC}\n" "$(ts)" "$*" | tee -a "$LOG_FILE" >&2; }
 die()   { err "$*"; exit 1; }
+
+TOTAL_STEPS=8
+step()  { printf "\n${CYAN}[STEP %d/%d] %s${NC}\n" "$1" "$TOTAL_STEPS" "$2" | tee -a "$LOG_FILE"; }
 
 on_error() {
     local rc=$?
@@ -45,7 +47,6 @@ trap 'on_error $LINENO' ERR
 
 # read из терминала, даже если stdin = process substitution (bash <(curl ...))
 ask() {
-    # ask "prompt" varname [default]
     local prompt="$1" varname="$2" default="${3:-}" reply
     if [ -n "$default" ]; then prompt="$prompt [$default]"; fi
     if [ -t 0 ] || [ -e /dev/tty ]; then
@@ -55,6 +56,19 @@ ask() {
     fi
     [ -z "$reply" ] && reply="$default"
     printf -v "$varname" '%s' "$reply"
+}
+
+confirm_yes_default() {
+    local prompt="$1" reply
+    if [ -t 0 ] || [ -e /dev/tty ]; then
+        read -r -p "$prompt [Y/n]: " reply < /dev/tty || reply=""
+    else
+        reply=""
+    fi
+    case "${reply,,}" in
+        ""|y|yes) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 # ----- steps -----
@@ -87,10 +101,10 @@ detect_os() {
 install_apt_packages() {
     log "Refreshing apt cache..."
     DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    log "Installing prerequisites: git, curl, openssl, ufw, wireguard-tools, iptables, certbot..."
+    log "Installing prerequisites: git, curl, openssl, ufw, wireguard-tools, iptables, certbot, dnsutils..."
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         ca-certificates curl gnupg lsb-release git openssl ufw \
-        wireguard-tools iptables jq certbot >>"$LOG_FILE" 2>&1
+        wireguard-tools iptables jq certbot dnsutils >>"$LOG_FILE" 2>&1
 }
 
 install_docker() {
@@ -141,9 +155,6 @@ ensure_env_file() {
     log "Generating .env with fresh secrets..."
     JWT_SECRET="$(openssl rand -hex 32)"
     BOOTSTRAP_ADMIN_PASSWORD="$(random_pass)"
-    # Phase 4: SECRETBOX_KEY больше не нужен — приватники peer'ов не хранятся.
-    # OBFS_PSK тоже снесён — обфускация теперь параметризованная (AWG-params),
-    # параметры выдаются control-plane'ом per-server и шифруются TLS'ом.
     cat > "$env_file" <<EOF
 JWT_SECRET=$JWT_SECRET
 BOOTSTRAP_ADMIN_EMAIL=$ADMIN_EMAIL
@@ -153,7 +164,6 @@ PANEL_HTTPS_PORT=$PANEL_HTTPS_PORT
 WG_PORT=$WG_PORT
 OBFS_PORT=$OBFS_PORT
 LOG_LEVEL=info
-# secure-by-default: mTLS обязателен. Включить отладку: AGENT_INSECURE_TLS=true
 AGENT_INSECURE_TLS=false
 MTLS_DIR=/opt/void-wg/runtime/agent-ca
 PUBLIC_BASE_URL=
@@ -174,70 +184,103 @@ env_set() {
 
 public_ip() {
     local ip
-    ip="$(curl -fsS -4 https://ifconfig.io 2>/dev/null || true)"
+    ip="$(curl -fsS -4 https://ifconfig.me 2>/dev/null || true)"
+    [ -n "$ip" ] || ip="$(curl -fsS -4 https://ifconfig.io 2>/dev/null || true)"
     [ -n "$ip" ] || ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
     [ -n "$ip" ] || ip="SERVER_IP"
     echo "$ip"
 }
 
+resolve_domain() {
+    local domain="$1"
+    if command -v dig >/dev/null 2>&1; then
+        dig +short "$domain" A 2>/dev/null | grep -E '^[0-9.]+$' | tail -n1
+    else
+        getent ahostsv4 "$domain" 2>/dev/null | awk 'NR==1{print $1}'
+    fi
+}
+
 # ===== TLS configuration =====
 
-choose_tls_mode() {
+choose_tls_mode_interactive() {
     if [ -n "$TLS_MODE" ]; then
         log "TLS_MODE=$TLS_MODE (from env)"
         return
     fi
     cat <<BANNER
 
-${BOLD}Choose TLS mode for the panel:${NC}
-  ${BOLD}1)${NC} ${GREEN}Self-signed${NC} certificate by IP — works immediately,
-                  но браузер будет показывать предупреждение.
-  ${BOLD}2)${NC} ${GREEN}Let's Encrypt${NC} certificate by domain — нужен валидный домен,
-                  указывающий A-записью на этот сервер; cert и автообновление
-                  настраиваются автоматически.
-  ${BOLD}3)${NC} HTTP only (без TLS) — небезопасно, только для тестов.
-
+${BOLD}====================================${NC}
+${BOLD}     SSL Certificate Setup${NC}
+${BOLD}====================================${NC}
+  ${BOLD}1)${NC} ${GREEN}Domain${NC} (рекомендуется)
+       - автоматический Let's Encrypt
+       - автообновление
+       - без warning в браузере
+  ${BOLD}2)${NC} ${GREEN}IP Address${NC}
+       - автоматический self-signed
+       - работает сразу
+       - возможен warning в браузере
+${BOLD}------------------------------------${NC}
 BANNER
     local choice
-    ask "Select 1/2/3" choice "1"
+    ask "Select [1-2] (default: 2)" choice "2"
     case "$choice" in
-        1|"") TLS_MODE=selfsigned ;;
-        2)    TLS_MODE=letsencrypt ;;
-        3)    TLS_MODE=none ;;
-        *)    die "Invalid choice: $choice" ;;
+        1) TLS_MODE=letsencrypt ;;
+        2|"") TLS_MODE=selfsigned ;;
+        *) die "Invalid choice: $choice" ;;
     esac
-    log "TLS_MODE=$TLS_MODE"
 }
 
-ask_domain_if_needed() {
+ask_domain_and_validate() {
     [ "$TLS_MODE" = "letsencrypt" ] || return 0
+
     if [ -z "$PANEL_DOMAIN" ]; then
-        ask "Enter panel domain (e.g. vpn.example.com)" PANEL_DOMAIN
+        echo
+        ask "Enter your domain (e.g. vpn.example.com)" PANEL_DOMAIN
         [ -n "$PANEL_DOMAIN" ] || die "Domain is required for Let's Encrypt"
     fi
-    if [ -z "$LE_EMAIL" ]; then
-        local default="$ADMIN_EMAIL"
-        [ "$default" = "admin@local" ] && default=""
-        ask "Email for Let's Encrypt notifications (recommended)" LE_EMAIL "$default"
+
+    # Подтверждение выбора
+    echo
+    printf "  ${BOLD}You selected:${NC} Domain\n"
+    printf "  ${BOLD}Domain:${NC}       %s\n\n" "$PANEL_DOMAIN"
+    if ! confirm_yes_default "Continue?"; then
+        die "Aborted by user"
     fi
-    log "Panel domain: $PANEL_DOMAIN"
 }
 
-# Резолвится ли домен в IP сервера? Предупредим, но не падаем — DNS может быть
-# свежим, а Let's Encrypt всё равно сделает A-проверку.
-check_dns() {
-    [ "$TLS_MODE" = "letsencrypt" ] || return 0
-    local server_ip; server_ip="$(public_ip)"
-    local resolved
-    resolved="$(getent ahostsv4 "$PANEL_DOMAIN" 2>/dev/null | awk 'NR==1{print $1}' || true)"
-    if [ -z "$resolved" ]; then
-        warn "Could not resolve $PANEL_DOMAIN — make sure A-record points to $server_ip"
-    elif [ "$resolved" != "$server_ip" ]; then
-        warn "$PANEL_DOMAIN resolves to $resolved, but this server's public IP is $server_ip"
-        warn "Let's Encrypt will fail unless A-record points to this server."
-    else
-        log "$PANEL_DOMAIN -> $resolved (matches server IP)"
+confirm_ip_choice() {
+    [ "$TLS_MODE" = "selfsigned" ] || return 0
+    local ip; ip="$(public_ip)"
+    echo
+    printf "  ${BOLD}You selected:${NC} IP Address\n"
+    printf "  ${BOLD}IP:${NC}           %s (self-signed, 10 years)\n\n" "$ip"
+    if ! confirm_yes_default "Continue?"; then
+        die "Aborted by user"
     fi
+}
+
+# Проверка DNS — обязательная для letsencrypt: если не сходится → выходим.
+check_dns_strict() {
+    [ "$TLS_MODE" = "letsencrypt" ] || return 0
+    log "Checking domain DNS..."
+    local server_ip resolved
+    server_ip="$(public_ip)"
+    resolved="$(resolve_domain "$PANEL_DOMAIN")"
+
+    if [ -z "$resolved" ]; then
+        err "Domain $PANEL_DOMAIN does not resolve to any IP."
+        err "Please add A-record pointing to $server_ip and try again."
+        exit 1
+    fi
+    if [ "$resolved" != "$server_ip" ]; then
+        err "Domain does not point to this server IP"
+        err "Expected: $server_ip"
+        err "Got:      $resolved"
+        err "Please fix DNS A record and try again."
+        exit 1
+    fi
+    ok "Domain resolves correctly ($PANEL_DOMAIN -> $resolved)"
 }
 
 generate_selfsigned() {
@@ -253,6 +296,7 @@ generate_selfsigned() {
         >>"$LOG_FILE" 2>&1
     chmod 600 "$tls_dir/privkey.pem"
     PANEL_DOMAIN="$ip"
+    ok "Self-signed certificate created"
 }
 
 issue_letsencrypt() {
@@ -262,29 +306,25 @@ issue_letsencrypt() {
     mkdir -p "$tls_dir"
 
     if [ -f "$le_dir/fullchain.pem" ] && [ -f "$le_dir/privkey.pem" ]; then
-        log "Let's Encrypt cert for $domain already present — skipping issuance"
+        ok "Let's Encrypt cert for $domain already present — skipping issuance"
     else
         log "Stopping anything bound to :80 (for ACME http-01)..."
-        # На случай если nginx или panel уже слушают порт 80 — стопаем frontend
         ( cd "$INSTALL_DIR" && docker compose stop frontend >/dev/null 2>&1 || true )
-        # Параллельно стопаем системный nginx/apache, если есть
         systemctl stop nginx 2>/dev/null || true
         systemctl stop apache2 2>/dev/null || true
 
-        local email_args=()
-        if [ -n "$LE_EMAIL" ]; then
-            email_args=(--email "$LE_EMAIL" --no-eff-email)
-        else
-            email_args=(--register-unsafely-without-email)
-        fi
-
-        log "Issuing Let's Encrypt certificate for $domain..."
-        certbot certonly --standalone --non-interactive --agree-tos \
-            "${email_args[@]}" \
-            -d "$domain" \
+        log "Requesting Let's Encrypt certificate..."
+        certbot certonly \
+            --standalone \
+            --non-interactive \
+            --agree-tos \
+            --register-unsafely-without-email \
             --preferred-challenges http \
+            -d "$domain" \
             >>"$LOG_FILE" 2>&1 \
-        || die "certbot failed — see $LOG_FILE. Common causes: A-record не указывает на этот сервер, порт 80 закрыт фаерволом."
+        || die "certbot failed — see $LOG_FILE. Common cause: порт 80 закрыт фаерволом или занят."
+
+        ok "Certificate issued successfully"
     fi
 
     log "Copying certificate into runtime/tls..."
@@ -295,33 +335,30 @@ issue_letsencrypt() {
 
 write_runtime_nginx_conf() {
     local out="$INSTALL_DIR/runtime/nginx.conf"
-    if [ "$TLS_MODE" = "none" ]; then
-        log "Writing HTTP-only nginx config"
-        cp "$INSTALL_DIR/frontend/nginx.http.conf" "$out"
-        return
-    fi
     log "Writing HTTPS nginx config (server_name=$PANEL_DOMAIN)"
     sed "s|__SERVER_NAME__|${PANEL_DOMAIN}|g" \
         "$INSTALL_DIR/frontend/nginx.https.conf.tpl" > "$out"
 }
 
 configure_tls() {
-    choose_tls_mode
-    ask_domain_if_needed
-    check_dns
-
+    choose_tls_mode_interactive
     case "$TLS_MODE" in
-        selfsigned)  generate_selfsigned ;;
-        letsencrypt) issue_letsencrypt ;;
-        none)        : ;;
+        letsencrypt)
+            ask_domain_and_validate
+            check_dns_strict
+            issue_letsencrypt
+            ;;
+        selfsigned)
+            confirm_ip_choice
+            generate_selfsigned
+            ;;
         *) die "Unknown TLS_MODE: $TLS_MODE" ;;
     esac
 
     write_runtime_nginx_conf
 
-    env_set "TLS_MODE"    "$TLS_MODE"
+    env_set "TLS_MODE"     "$TLS_MODE"
     env_set "PANEL_DOMAIN" "$PANEL_DOMAIN"
-    env_set "LE_EMAIL"    "${LE_EMAIL:-}"
 }
 
 configure_firewall() {
@@ -362,7 +399,6 @@ install_cli_wrapper() {
     fi
     log "Installing v-wg CLI wrapper -> $dst"
     chmod +x "$src"
-    # Симлинк, чтобы обновления через update.sh подхватывались автоматически.
     ln -sfn "$src" "$dst"
 }
 
@@ -377,6 +413,7 @@ install_renew_timer() {
     cp "$tmr_src" /etc/systemd/system/void-wg-renew.timer
     systemctl daemon-reload
     systemctl enable --now void-wg-renew.timer >>"$LOG_FILE" 2>&1
+    ok "Auto-renewal enabled"
 }
 
 start_stack() {
@@ -386,12 +423,7 @@ start_stack() {
     docker compose up -d --build --remove-orphans >>"$LOG_FILE" 2>&1
 
     log "Waiting for API to be ready..."
-    local probe_url
-    if [ "$TLS_MODE" = "none" ]; then
-        probe_url="http://127.0.0.1:${PANEL_HTTP_PORT}/healthz"
-    else
-        probe_url="https://127.0.0.1:${PANEL_HTTPS_PORT}/healthz"
-    fi
+    local probe_url="https://127.0.0.1:${PANEL_HTTPS_PORT}/healthz"
     local ok=0
     for _ in $(seq 1 60); do
         if curl -fsSk "$probe_url" >/dev/null 2>&1; then
@@ -411,9 +443,8 @@ print_summary() {
     case "$TLS_MODE" in
         letsencrypt) url="https://${PANEL_DOMAIN}" ;;
         selfsigned)  url="https://$(public_ip)" ;;
-        none)        url="http://$(public_ip):${PANEL_HTTP_PORT}" ;;
     esac
-    [ "$PANEL_HTTPS_PORT" = "443" ] || [ "$TLS_MODE" = "none" ] || url="$url:$PANEL_HTTPS_PORT"
+    [ "$PANEL_HTTPS_PORT" = "443" ] || url="$url:$PANEL_HTTPS_PORT"
 
     cat <<EOF
 
@@ -452,17 +483,32 @@ main() {
     : > "$LOG_FILE"
     log "void-wg installer starting..."
 
+    step 1 "Detecting OS and installing prerequisites"
     detect_os
     install_apt_packages
+
+    step 2 "Installing Docker"
     install_docker
+
+    step 3 "Cloning repository"
     clone_repo
     ensure_env_file
+
+    step 4 "Setting up SSL"
     configure_tls
+
+    step 5 "Configuring firewall"
     configure_firewall
+
+    step 6 "Installing systemd units and CLI"
     install_systemd_unit
     install_renew_timer
     install_cli_wrapper
+
+    step 7 "Starting containers"
     start_stack
+
+    step 8 "Done"
     print_summary
 }
 
