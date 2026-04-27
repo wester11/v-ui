@@ -8,6 +8,13 @@
 
 set -Eeuo pipefail
 
+# DEBUG=1 — включает trace + verbose-логирование команд.
+DEBUG="${DEBUG:-0}"
+if [ "$DEBUG" = "1" ]; then
+    export PS4='+ [${BASH_SOURCE##*/}:${LINENO}] '
+    set -x
+fi
+
 # ----- defaults / overrides via env -----
 REPO_URL="${REPO_URL:-https://github.com/wester11/void_wg.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
@@ -37,13 +44,80 @@ die()   { err "$*"; exit 1; }
 
 TOTAL_STEPS=8
 step()  { printf "\n${CYAN}[STEP %d/%d] %s${NC}\n" "$1" "$TOTAL_STEPS" "$2" | tee -a "$LOG_FILE"; }
+dbg()   { [ "$DEBUG" = "1" ] && printf "[DEBUG] %s\n" "$*" | tee -a "$LOG_FILE" >&2 || true; }
+hint()  { printf "${YELLOW}  • %s${NC}\n" "$*" | tee -a "$LOG_FILE" >&2; }
+
+# run — выполняет команду с логированием; stdout/stderr → лог-файл.
+# При ошибке возвращает RC, чтобы trap мог сработать выше по стеку.
+run() {
+    dbg "Running: $*"
+    if [ "$DEBUG" = "1" ]; then
+        # В debug-режиме видим вывод и в консоли, и в логе.
+        "$@" 2>&1 | tee -a "$LOG_FILE"
+        local rc=${PIPESTATUS[0]}
+    else
+        "$@" >>"$LOG_FILE" 2>&1
+        local rc=$?
+    fi
+    dbg "Exit code: $rc"
+    return $rc
+}
+
+# runq — то же, что run, но без падения на non-zero (для опциональных команд).
+runq() {
+    dbg "Running (best-effort): $*"
+    "$@" >>"$LOG_FILE" 2>&1 || true
+}
+
+# dump_recent_log — последние 50 строк install-лога (для on_error / диагностики).
+dump_recent_log() {
+    local n="${1:-50}"
+    if [ -f "$LOG_FILE" ]; then
+        printf "${YELLOW}--- last %d lines of %s ---${NC}\n" "$n" "$LOG_FILE" >&2
+        tail -n "$n" "$LOG_FILE" >&2 || true
+        printf "${YELLOW}--- end of log tail ---${NC}\n" >&2
+    fi
+}
+
+# dump_compose_logs — выводит ps + последние строки логов всех сервисов.
+# Безопасно вызывать даже если стек ещё не поднимался.
+dump_compose_logs() {
+    local n="${1:-50}"
+    [ -f "$INSTALL_DIR/docker-compose.yml" ] || return 0
+    command -v docker >/dev/null 2>&1 || return 0
+    printf "${YELLOW}--- docker compose ps ---${NC}\n" >&2
+    ( cd "$INSTALL_DIR" && docker compose ps 2>&1 ) >&2 || true
+    printf "${YELLOW}--- docker compose logs (last %d lines) ---${NC}\n" "$n" >&2
+    ( cd "$INSTALL_DIR" && docker compose logs --tail="$n" 2>&1 ) >&2 || true
+}
+
+# port_in_use — печатает кто занимает порт (lsof / ss fallback).
+port_in_use() {
+    local port="$1"
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -i ":${port}" 2>/dev/null || true
+    elif command -v ss >/dev/null 2>&1; then
+        ss -tulnp "sport = :${port}" 2>/dev/null || true
+    fi
+}
 
 on_error() {
     local rc=$?
-    err "Installation failed at line $1 (exit $rc). See $LOG_FILE for details."
+    local line="$1"
+    local cmd="$2"
+    err "Installation failed at line $line (exit $rc)"
+    err "Last command: $cmd"
+    dump_recent_log 50
+    # Если на момент падения стек уже поднимался — добавляем compose-диагностику.
+    case "$cmd" in
+        *docker*compose*|*"compose up"*|*"compose pull"*|*"compose build"*)
+            dump_compose_logs 50
+            ;;
+    esac
+    err "Full log: $LOG_FILE"
     exit "$rc"
 }
-trap 'on_error $LINENO' ERR
+trap 'on_error $LINENO "$BASH_COMMAND"' ERR
 
 # read из терминала, даже если stdin = process substitution (bash <(curl ...))
 ask() {
@@ -100,11 +174,13 @@ detect_os() {
 
 install_apt_packages() {
     log "Refreshing apt cache..."
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    log "Installing prerequisites: git, curl, openssl, ufw, wireguard-tools, iptables, certbot, dnsutils..."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    run env DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+        || die "apt-get update failed (см. $LOG_FILE). Возможные причины: нет интернета, сломан /etc/apt/sources.list, заблокирован lock /var/lib/dpkg/lock-frontend другим apt-процессом."
+    log "Installing prerequisites: git, curl, openssl, ufw, wireguard-tools, iptables, certbot, dnsutils, lsof..."
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         ca-certificates curl gnupg lsb-release git openssl ufw \
-        wireguard-tools iptables jq certbot dnsutils >>"$LOG_FILE" 2>&1
+        wireguard-tools iptables jq certbot dnsutils lsof \
+        || die "apt-get install failed (см. $LOG_FILE). Запустите вручную для деталей: sudo apt-get install -y certbot dnsutils ..."
 }
 
 install_docker() {
@@ -115,27 +191,31 @@ install_docker() {
     log "Installing Docker Engine + Compose plugin..."
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL "https://download.docker.com/linux/${OS_ID}/gpg" \
-        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+        || die "Failed to download Docker GPG key (no internet?)"
     chmod a+r /etc/apt/keyrings/docker.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${OS_ID} $(lsb_release -cs) stable" \
         > /etc/apt/sources.list.d/docker.list
-    DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    run env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-        >>"$LOG_FILE" 2>&1
-    systemctl enable --now docker >/dev/null 2>&1 || true
+        || die "Docker install failed (см. $LOG_FILE)."
+    runq systemctl enable --now docker
     log "Docker installed: $(docker --version | head -n1)"
 }
 
 clone_repo() {
     if [ -d "$INSTALL_DIR/.git" ]; then
         log "Repo already present at $INSTALL_DIR — pulling latest"
-        git -C "$INSTALL_DIR" fetch --quiet origin "$REPO_BRANCH"
-        git -C "$INSTALL_DIR" reset --hard "origin/$REPO_BRANCH" >>"$LOG_FILE" 2>&1
+        run git -C "$INSTALL_DIR" fetch --quiet origin "$REPO_BRANCH" \
+            || die "git fetch failed: проверьте сетевой доступ к $REPO_URL"
+        run git -C "$INSTALL_DIR" reset --hard "origin/$REPO_BRANCH" \
+            || die "git reset failed (локальные изменения в $INSTALL_DIR?)"
     else
         log "Cloning $REPO_URL ($REPO_BRANCH) -> $INSTALL_DIR"
         rm -rf "$INSTALL_DIR"
-        git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR" >>"$LOG_FILE" 2>&1
+        run git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR" \
+            || die "git clone failed: $REPO_URL ($REPO_BRANCH) — проверьте URL и доступ."
     fi
     mkdir -p "$INSTALL_DIR/runtime/tls" "$INSTALL_DIR/runtime/acme-www"
 }
@@ -309,20 +389,37 @@ issue_letsencrypt() {
         ok "Let's Encrypt cert for $domain already present — skipping issuance"
     else
         log "Stopping anything bound to :80 (for ACME http-01)..."
-        ( cd "$INSTALL_DIR" && docker compose stop frontend >/dev/null 2>&1 || true )
-        systemctl stop nginx 2>/dev/null || true
-        systemctl stop apache2 2>/dev/null || true
+        ( cd "$INSTALL_DIR" && runq docker compose stop frontend )
+        runq systemctl stop nginx
+        runq systemctl stop apache2
+
+        # Pre-flight: убедиться, что :80 действительно свободен
+        local p80_users
+        p80_users="$(port_in_use 80)"
+        if [ -n "$p80_users" ]; then
+            err "Port 80 is still busy after stop attempt:"
+            printf '%s\n' "$p80_users" | tee -a "$LOG_FILE" >&2
+            hint "Manually stop whatever uses port 80 and re-run installer."
+            hint "Example: sudo fuser -k 80/tcp"
+            exit 1
+        fi
 
         log "Requesting Let's Encrypt certificate..."
-        certbot certonly \
-            --standalone \
-            --non-interactive \
-            --agree-tos \
-            --register-unsafely-without-email \
-            --preferred-challenges http \
-            -d "$domain" \
-            >>"$LOG_FILE" 2>&1 \
-        || die "certbot failed — see $LOG_FILE. Common cause: порт 80 закрыт фаерволом или занят."
+        if ! run certbot certonly \
+                --standalone \
+                --non-interactive \
+                --agree-tos \
+                --register-unsafely-without-email \
+                --preferred-challenges http \
+                -d "$domain"; then
+            err "certbot failed"
+            err "Possible reasons:"
+            hint "Port 80 закрыт фаерволом провайдера (нужно открыть TCP/80 inbound)"
+            hint "DNS A-record указывает не на этот сервер"
+            hint "Rate-limit Let's Encrypt (5 неудач/час): подождите час или добавьте --staging"
+            hint "Smth bound to :80: $(port_in_use 80 | head -n3 | tr '\n' '; ')"
+            exit 1
+        fi
 
         ok "Certificate issued successfully"
     fi
@@ -387,7 +484,7 @@ install_systemd_unit() {
     log "Installing systemd unit: $unit_dst"
     sed "s|/opt/void-wg|$INSTALL_DIR|g" "$unit_src" > "$unit_dst"
     systemctl daemon-reload
-    systemctl enable void-wg.service >/dev/null 2>&1 || true
+    runq systemctl enable void-wg.service
 }
 
 install_cli_wrapper() {
@@ -412,29 +509,46 @@ install_renew_timer() {
     sed "s|/opt/void-wg|$INSTALL_DIR|g" "$svc_src" > /etc/systemd/system/void-wg-renew.service
     cp "$tmr_src" /etc/systemd/system/void-wg-renew.timer
     systemctl daemon-reload
-    systemctl enable --now void-wg-renew.timer >>"$LOG_FILE" 2>&1
+    run systemctl enable --now void-wg-renew.timer
     ok "Auto-renewal enabled"
 }
 
 start_stack() {
     log "Building and starting containers (first run can take a few minutes)..."
     cd "$INSTALL_DIR"
-    docker compose pull --quiet 2>>"$LOG_FILE" || true
-    docker compose up -d --build --remove-orphans >>"$LOG_FILE" 2>&1
+    runq docker compose pull --quiet
+    if ! run docker compose up -d --build --remove-orphans; then
+        err "docker compose up failed"
+        dump_compose_logs 100
+        hint "Run manually for live output: cd $INSTALL_DIR && docker compose up --build"
+        hint "Если падает на build — проверьте, есть ли свободное место: df -h"
+        exit 1
+    fi
 
     log "Waiting for API to be ready..."
     local probe_url="https://127.0.0.1:${PANEL_HTTPS_PORT}/healthz"
-    local ok=0
+    local ready=0
     for _ in $(seq 1 60); do
         if curl -fsSk "$probe_url" >/dev/null 2>&1; then
-            ok=1; break
+            ready=1; break
         fi
         sleep 2
     done
-    if [ "$ok" -ne 1 ]; then
-        warn "API did not become healthy within 120s. Inspect: docker compose -f $INSTALL_DIR/docker-compose.yml logs"
+    if [ "$ready" -ne 1 ]; then
+        warn "API did not become healthy within 120s — собираю диагностику..."
+        dump_compose_logs 100
+        local svc state
+        for svc in postgres api frontend; do
+            state="$(docker compose ps --format '{{.State}}' "$svc" 2>/dev/null | head -n1 || true)"
+            if [ "$state" != "running" ]; then
+                err "service $svc is in state: ${state:-unknown}"
+            fi
+        done
+        hint "Tail logs in foreground: docker compose -f $INSTALL_DIR/docker-compose.yml logs -f"
+        hint "Restart only api: docker compose -f $INSTALL_DIR/docker-compose.yml restart api"
+        hint "TLS-cert problem? Check: ls -la $INSTALL_DIR/runtime/tls/"
     else
-        log "API is healthy ($probe_url)"
+        ok "API is healthy ($probe_url)"
     fi
 }
 
@@ -446,11 +560,9 @@ print_summary() {
     esac
     [ "$PANEL_HTTPS_PORT" = "443" ] || url="$url:$PANEL_HTTPS_PORT"
 
-    cat <<EOF
+    cat <<SUMEOF
 
-${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
-${BOLD}${GREEN}  Installation complete!${NC}
-${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
+  Installation complete!
 
   Panel:    ${url}
   TLS mode: ${TLS_MODE}
@@ -458,23 +570,17 @@ ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━
   Password: ${BOOTSTRAP_ADMIN_PASSWORD}
 
   Files:    ${INSTALL_DIR}
-  .env:     ${INSTALL_DIR}/.env  (mode 600 — back it up!)
+  .env:     ${INSTALL_DIR}/.env  (mode 600)
   TLS dir:  ${INSTALL_DIR}/runtime/tls
   Logs:     docker compose -f ${INSTALL_DIR}/docker-compose.yml logs -f
   Update:   sudo bash ${INSTALL_DIR}/scripts/update.sh
-  Renew:    sudo bash ${INSTALL_DIR}/scripts/renew-cert.sh   (Let's Encrypt only)
+  Renew:    sudo bash ${INSTALL_DIR}/scripts/renew-cert.sh
   Remove:   sudo bash ${INSTALL_DIR}/scripts/uninstall.sh
 
-  ${BOLD}Manage panel:${NC}  sudo v-wg            (interactive menu)
+  Manage:   sudo v-wg
 
-  systemd:  systemctl status void-wg
-$( [ "$TLS_MODE" = "letsencrypt" ] && printf '  TLS timer: systemctl status void-wg-renew.timer\n' )
-
-${YELLOW}Save these credentials — they are also stored in ${INSTALL_DIR}/.env${NC}
-$( [ "$TLS_MODE" = "selfsigned" ] && printf "${YELLOW}Self-signed cert: браузер покажет предупреждение — это нормально для IP-режима.${NC}\n" )
-
-${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
-EOF
+  Save these credentials — they are also stored in ${INSTALL_DIR}/.env
+SUMEOF
 }
 
 main() {
@@ -482,6 +588,11 @@ main() {
     mkdir -p "$(dirname "$LOG_FILE")"
     : > "$LOG_FILE"
     log "void-wg installer starting..."
+    if [ "$DEBUG" = "1" ]; then
+        warn "DEBUG=1 — verbose output enabled (set -x + command tracing)"
+    else
+        log "tip: re-run with DEBUG=1 for verbose output"
+    fi
 
     step 1 "Detecting OS and installing prerequisites"
     detect_os
