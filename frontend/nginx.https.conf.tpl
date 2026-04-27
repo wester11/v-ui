@@ -12,7 +12,7 @@ server {
 
     # Все остальные запросы — редирект на HTTPS
     location / {
-        return 301 https://$host$request_uri;
+        return 301 https://$host:__HTTPS_PORT__$request_uri;
     }
 }
 
@@ -22,6 +22,8 @@ server {
     server_name __SERVER_NAME__;
     root /usr/share/nginx/html;
     index index.html;
+    resolver 127.0.0.11 ipv6=off valid=30s;
+    set $api_upstream api:8080;
 
     client_max_body_size 1m;
 
@@ -39,8 +41,19 @@ server {
     add_header X-Frame-Options DENY always;
     add_header Referrer-Policy strict-origin-when-cross-origin always;
 
+    location = /__PANEL_ENTRY_TOKEN__ {
+        add_header Set-Cookie "panel_auth=__PANEL_ENTRY_TOKEN__; Path=/; HttpOnly; Secure; SameSite=Strict" always;
+        return 302 /;
+    }
+
+    location = /__PANEL_ENTRY_TOKEN__/ {
+        add_header Set-Cookie "panel_auth=__PANEL_ENTRY_TOKEN__; Path=/; HttpOnly; Secure; SameSite=Strict" always;
+        return 302 /;
+    }
+
     location /api/ {
-        proxy_pass http://api:8080;
+        if ($http_cookie !~* "(^|;\\s*)panel_auth=__PANEL_ENTRY_TOKEN__(;|$)") { return 404; }
+        proxy_pass http://$api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -49,7 +62,7 @@ server {
     }
 
     location = /healthz {
-        proxy_pass http://api:8080/healthz;
+        proxy_pass http://$api_upstream/healthz;
         access_log off;
     }
 
@@ -60,10 +73,11 @@ server {
         allow 172.16.0.0/12;
         allow 192.168.0.0/16;
         deny all;
-        proxy_pass http://api:8080/metrics;
+        proxy_pass http://$api_upstream/metrics;
     }
 
     location / {
+        if ($http_cookie !~* "(^|;\\s*)panel_auth=__PANEL_ENTRY_TOKEN__(;|$)") { return 404; }
         try_files $uri /index.html;
     }
 }

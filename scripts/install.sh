@@ -20,6 +20,7 @@ REPO_URL="${REPO_URL:-https://github.com/wester11/v-ui.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/void-wg}"
 PANEL_HTTP_PORT="${PANEL_HTTP_PORT:-80}"
+PANEL_HTTPS_PORT_INPUT="${PANEL_HTTPS_PORT:-}"
 PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-443}"
 WG_PORT="${WG_PORT:-51820}"
 OBFS_PORT="${OBFS_PORT:-51821}"
@@ -31,6 +32,8 @@ LOG_FILE="${LOG_FILE:-/var/log/void-wg-install.log}"
 #   TLS_MODE=letsencrypt PANEL_DOMAIN=vpn.example.com — Let's Encrypt
 TLS_MODE="${TLS_MODE:-}"
 PANEL_DOMAIN="${PANEL_DOMAIN:-}"
+PANEL_ENTRY_TOKEN="${PANEL_ENTRY_TOKEN:-}"
+PANEL_HTTPS_PORT_RANDOMIZED="${PANEL_HTTPS_PORT_RANDOMIZED:-}"
 
 # ----- pretty -----
 # Enable ANSI colors only when writing to a TTY.
@@ -349,6 +352,39 @@ choose_tls_mode_interactive() {
     done
 }
 
+pick_random_https_port() {
+    local p tries=0
+    while [ "$tries" -lt 64 ]; do
+        p=$(( (RANDOM % 45536) + 20000 ))
+        if ! port_in_use "$p" | grep -q .; then
+            echo "$p"
+            return 0
+        fi
+        tries=$((tries + 1))
+    done
+    # Fallback to a known default if no free random port found.
+    echo "443"
+}
+
+ensure_panel_access_endpoint() {
+    if [ -z "$PANEL_ENTRY_TOKEN" ]; then
+        PANEL_ENTRY_TOKEN="$(openssl rand -hex 16)"
+    fi
+
+    # Randomize HTTPS host port once (unless explicitly provided at launch).
+    if [ -z "$PANEL_HTTPS_PORT_RANDOMIZED" ]; then
+        if [ -z "$PANEL_HTTPS_PORT_INPUT" ] && [ "${PANEL_HTTPS_PORT:-443}" = "443" ]; then
+            PANEL_HTTPS_PORT="$(pick_random_https_port)"
+            log "Using randomized HTTPS port: $PANEL_HTTPS_PORT"
+        fi
+        PANEL_HTTPS_PORT_RANDOMIZED="true"
+    fi
+
+    env_set "PANEL_HTTPS_PORT" "$PANEL_HTTPS_PORT"
+    env_set "PANEL_ENTRY_TOKEN" "$PANEL_ENTRY_TOKEN"
+    env_set "PANEL_HTTPS_PORT_RANDOMIZED" "$PANEL_HTTPS_PORT_RANDOMIZED"
+}
+
 ask_domain_and_validate() {
     [ "$TLS_MODE" = "letsencrypt" ] || return 0
 
@@ -471,7 +507,9 @@ issue_letsencrypt() {
 write_runtime_nginx_conf() {
     local out="$INSTALL_DIR/runtime/nginx.conf"
     log "Writing HTTPS nginx config (server_name=$PANEL_DOMAIN)"
-    sed "s|__SERVER_NAME__|${PANEL_DOMAIN}|g" \
+    sed -e "s|__SERVER_NAME__|${PANEL_DOMAIN}|g" \
+        -e "s|__HTTPS_PORT__|${PANEL_HTTPS_PORT}|g" \
+        -e "s|__PANEL_ENTRY_TOKEN__|${PANEL_ENTRY_TOKEN}|g" \
         "$INSTALL_DIR/frontend/nginx.https.conf.tpl" > "$out"
 }
 
@@ -490,6 +528,7 @@ configure_tls() {
         *) die "Unknown TLS_MODE: $TLS_MODE" ;;
     esac
 
+    ensure_panel_access_endpoint
     write_runtime_nginx_conf
 
     env_set "TLS_MODE"     "$TLS_MODE"
@@ -602,6 +641,7 @@ print_summary() {
         selfsigned)  url="https://$(public_ip)" ;;
     esac
     [ "$PANEL_HTTPS_PORT" = "443" ] || url="$url:$PANEL_HTTPS_PORT"
+    url="$url/$PANEL_ENTRY_TOKEN"
 
     cat <<SUMEOF
 
@@ -622,6 +662,7 @@ print_summary() {
 
   Manage:   sudo v-wg
 
+  NOTE: Open panel only via the secret URL above (token path required).
   Save these credentials — they are also stored in ${INSTALL_DIR}/.env
 SUMEOF
 }
