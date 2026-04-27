@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # void-wg one-click installer.
 #
-#   bash <(curl -Ls https://raw.githubusercontent.com/wester11/void_wg/main/scripts/install.sh)
+#   bash <(curl -Ls https://raw.githubusercontent.com/wester11/v-ui/main/scripts/install.sh)
 #
 # Идемпотентен: повторный запуск не ломает уже установленную копию.
 # Логи: /var/log/void-wg-install.log
@@ -16,7 +16,7 @@ if [ "$DEBUG" = "1" ]; then
 fi
 
 # ----- defaults / overrides via env -----
-REPO_URL="${REPO_URL:-https://github.com/wester11/void_wg.git}"
+REPO_URL="${REPO_URL:-https://github.com/wester11/v-ui.git}"
 REPO_BRANCH="${REPO_BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/void-wg}"
 PANEL_HTTP_PORT="${PANEL_HTTP_PORT:-80}"
@@ -221,7 +221,8 @@ clone_repo() {
 }
 
 random_pass() {
-    LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16
+    # Avoid SIGPIPE under `set -o pipefail` (no pipeline here).
+    openssl rand -hex 8
 }
 
 ensure_env_file() {
