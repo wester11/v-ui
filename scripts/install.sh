@@ -207,6 +207,13 @@ install_docker() {
 clone_repo() {
     if [ -d "$INSTALL_DIR/.git" ]; then
         log "Repo already present at $INSTALL_DIR — pulling latest"
+        local current_origin
+        current_origin="$(git -C "$INSTALL_DIR" remote get-url origin 2>/dev/null || true)"
+        if [ "$current_origin" != "$REPO_URL" ]; then
+            log "Updating git origin: ${current_origin:-<none>} -> $REPO_URL"
+            run git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL" \
+                || die "git remote set-url failed: $REPO_URL"
+        fi
         run git -C "$INSTALL_DIR" fetch --quiet origin "$REPO_BRANCH" \
             || die "git fetch failed: проверьте сетевой доступ к $REPO_URL"
         run git -C "$INSTALL_DIR" reset --hard "origin/$REPO_BRANCH" \
