@@ -98,7 +98,9 @@ export default function ServerDetail() {
             <Field label="Obfuscation">
               {server.obfs_enabled ? <Badge tone="info">on</Badge> : <Badge>off</Badge>}
             </Field>
-            <Field label="Public key"><CopyField value={server.public_key} /></Field>
+            <Field label="Public key">
+              <CopyField value={server.public_key ?? server.xray_public_key ?? ''} />
+            </Field>
             <Field label="Server ID"><CopyField value={server.id} /></Field>
           </div>
         ) : (

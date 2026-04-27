@@ -69,7 +69,7 @@ export default function Servers() {
     return list.filter((s) =>
       s.name.toLowerCase().includes(q) ||
       s.endpoint.toLowerCase().includes(q) ||
-      s.subnet.toLowerCase().includes(q),
+      (s.subnet ?? '').toLowerCase().includes(q),
     )
   }, [list, search])
 

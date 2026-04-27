@@ -41,8 +41,8 @@ export default function Peers() {
     if (!q) return peers
     return peers.filter((p) =>
       p.name.toLowerCase().includes(q) ||
-      p.assigned_ip.toLowerCase().includes(q) ||
-      p.public_key.toLowerCase().includes(q),
+      (p.assigned_ip ?? '').toLowerCase().includes(q) ||
+      (p.public_key ?? '').toLowerCase().includes(q),
     )
   }, [peers, search])
 
