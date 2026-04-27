@@ -84,6 +84,13 @@ runq() {
     "$@" >>"$LOG_FILE" 2>&1 || true
 }
 
+apt_run() {
+    run env DEBIAN_FRONTEND=noninteractive apt-get \
+        -o DPkg::Lock::Timeout=120 \
+        -o Acquire::Retries=3 \
+        "$@"
+}
+
 # dump_recent_log — последние 50 строк install-лога (для on_error / диагностики).
 dump_recent_log() {
     local n="${1:-50}"
@@ -189,13 +196,21 @@ detect_os() {
 
 install_apt_packages() {
     log "Refreshing apt cache..."
-    run env DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+    apt_run update -qq \
         || die "apt-get update failed (см. $LOG_FILE). Возможные причины: нет интернета, сломан /etc/apt/sources.list, заблокирован lock /var/lib/dpkg/lock-frontend другим apt-процессом."
     log "Installing prerequisites: git, curl, openssl, ufw, wireguard-tools, iptables, certbot, dnsutils, lsof..."
-    run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    if ! apt_run install -y -qq \
         ca-certificates curl gnupg lsb-release git openssl ufw \
-        wireguard-tools iptables jq certbot dnsutils lsof \
-        || die "apt-get install failed (см. $LOG_FILE). Запустите вручную для деталей: sudo apt-get install -y certbot dnsutils ..."
+        wireguard-tools iptables jq certbot dnsutils lsof; then
+        warn "apt-get install failed; attempting automatic recovery (dpkg/apt fix) and retry..."
+        runq dpkg --configure -a
+        runq env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 -f install -y -qq
+        runq env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 update -qq
+        apt_run install -y -qq \
+            ca-certificates curl gnupg lsb-release git openssl ufw \
+            wireguard-tools iptables jq certbot dnsutils lsof \
+            || { dump_recent_log 120; die "apt-get install failed after recovery attempt (см. $LOG_FILE). Попробуйте вручную: dpkg --configure -a && apt-get -f install -y && apt-get install -y certbot dnsutils"; }
+    fi
 }
 
 install_docker() {
@@ -211,8 +226,8 @@ install_docker() {
     chmod a+r /etc/apt/keyrings/docker.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${OS_ID} $(lsb_release -cs) stable" \
         > /etc/apt/sources.list.d/docker.list
-    run env DEBIAN_FRONTEND=noninteractive apt-get update -qq
-    run env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    apt_run update -qq
+    apt_run install -y -qq \
         docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
         || die "Docker install failed (см. $LOG_FILE)."
     runq systemctl enable --now docker
