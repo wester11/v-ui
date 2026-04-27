@@ -3,6 +3,7 @@ import { api, ApiError } from '../api/client'
 import type { FleetHealthResult, FleetRedeployResult } from '../types'
 import { Badge, Button, Empty, Skeleton, toast } from '../components/ui'
 import { formatRelative } from '../lib/format'
+import { useI18n } from '../i18n'
 
 function healthTone(status: string): 'success' | 'danger' | 'warn' {
   if (status === 'online') return 'success'
@@ -11,6 +12,7 @@ function healthTone(status: string): 'success' | 'danger' | 'warn' {
 }
 
 export default function Settings() {
+  const { locale, setLocale, t } = useI18n()
   const [health, setHealth] = useState<FleetHealthResult[] | null>(null)
   const [redeployResult, setRedeployResult] = useState<FleetRedeployResult[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -57,6 +59,21 @@ export default function Settings() {
         <div className="row">
           <Button onClick={loadHealth} loading={loading}>Refresh health</Button>
           <Button variant="primary" onClick={redeployAll} loading={redeploying}>Redeploy all Xray nodes</Button>
+        </div>
+      </div>
+
+      <div className="card mb-4">
+        <div className="card-header">
+          <div>
+            <div className="card-title">{t('settings_language', 'Language')}</div>
+            <div className="card-sub">{t('settings_language_hint', 'Choose UI language')}</div>
+          </div>
+        </div>
+        <div className="row">
+          <select className="select" value={locale} onChange={(e) => setLocale(e.target.value as 'en' | 'ru')}>
+            <option value="en">English</option>
+            <option value="ru">Русский</option>
+          </select>
         </div>
       </div>
 

@@ -39,9 +39,20 @@ type ServerRepository interface {
 	Update(ctx context.Context, s *domain.Server) error
 	GetByID(ctx context.Context, id uuid.UUID) (*domain.Server, error)
 	GetByToken(ctx context.Context, token string) (*domain.Server, error)
+	GetByNodeID(ctx context.Context, nodeID uuid.UUID) (*domain.Server, error)
 	List(ctx context.Context) ([]*domain.Server, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	CountOnline(ctx context.Context) (total int, online int, err error)
+}
+
+type ConfigRepository interface {
+	Create(ctx context.Context, cfg *domain.VPNConfig) error
+	Update(ctx context.Context, cfg *domain.VPNConfig) error
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.VPNConfig, error)
+	ListByServer(ctx context.Context, serverID uuid.UUID) ([]*domain.VPNConfig, error)
+	GetActiveByServer(ctx context.Context, serverID uuid.UUID) (*domain.VPNConfig, error)
+	SetActive(ctx context.Context, serverID, configID uuid.UUID) error
+	Delete(ctx context.Context, id uuid.UUID) error
 }
 
 // InviteRepository — одноразовые инвайты для client-side keygen.

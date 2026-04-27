@@ -35,9 +35,14 @@ func main() {
 	}
 	defer pool.Close()
 
+	if err := persistence.EnsureSchemaUpgrades(ctx, pool); err != nil {
+		log.Fatal().Err(err).Msg("schema upgrade")
+	}
+
 	userRepo := persistence.NewUserRepo(pool)
 	peerRepo := persistence.NewPeerRepo(pool)
 	srvRepo := persistence.NewServerRepo(pool)
+	cfgRepo := persistence.NewConfigRepo(pool)
 	invRepo := persistence.NewInviteRepo(pool)
 	auditRepo := persistence.NewAuditRepo(pool)
 
@@ -58,7 +63,8 @@ func main() {
 	auditUC := usecase.NewAuditService(auditRepo)
 	userUC := usecase.NewUserService(userRepo, hasher)
 	peerUC := usecase.NewPeerService(peerRepo, srvRepo, agentTransport)
-	srvUC := usecase.NewServerService(srvRepo, keys, mtlsIssuer)
+	cfgUC := usecase.NewConfigService(cfgRepo, srvRepo, peerRepo, agentTransport)
+	srvUC := usecase.NewServerService(srvRepo, keys, mtlsIssuer, cfg.PublicBaseURL)
 	inviteUC := usecase.NewInviteService(invRepo, peerUC, srvRepo)
 	statsUC := usecase.NewStatsService(userRepo, peerRepo, srvRepo)
 
@@ -68,7 +74,8 @@ func main() {
 		Auth:   handler.NewAuth(authUC, userUC, auditUC),
 		User:   handler.NewUser(userUC, auditUC),
 		Peer:   handler.NewPeer(peerUC, auditUC),
-		Server: handler.NewServer(srvUC, auditUC),
+		Server: handler.NewServer(srvUC, cfgUC, auditUC),
+		Config: handler.NewConfig(cfgUC, auditUC),
 		Stats:  handler.NewStats(statsUC),
 		Invite: handler.NewInvite(inviteUC, cfg.PublicBaseURL, auditUC),
 		Audit:  handler.NewAudit(auditUC),

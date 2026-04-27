@@ -59,6 +59,8 @@ func (s *PeerService) Create(ctx context.Context, in CreatePeerInput) (*domain.P
 		return s.createWG(ctx, srv, in)
 	case domain.ProtoXray:
 		return s.createXray(ctx, srv, in)
+	case domain.ProtoNone:
+		return nil, "", domain.ErrValidation
 	default:
 		return nil, "", domain.ErrInvalidInput
 	}

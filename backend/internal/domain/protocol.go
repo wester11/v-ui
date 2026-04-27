@@ -6,6 +6,7 @@ import "encoding/json"
 type Protocol string
 
 const (
+	ProtoNone      Protocol = "none"
 	ProtoWireGuard Protocol = "wireguard"
 	ProtoAmneziaWG Protocol = "amneziawg"
 	ProtoXray      Protocol = "xray"
@@ -13,7 +14,7 @@ const (
 
 func (p Protocol) Valid() bool {
 	switch p {
-	case ProtoWireGuard, ProtoAmneziaWG, ProtoXray:
+	case ProtoNone, ProtoWireGuard, ProtoAmneziaWG, ProtoXray:
 		return true
 	}
 	return false
@@ -30,6 +31,7 @@ type XrayConfig struct {
 	Fingerprint  string   `json:"fingerprint"`
 	Flow         string   `json:"flow"`
 	FallbackDest string   `json:"fallback_dest,omitempty"`
+	RawConfig    json.RawMessage `json:"raw_config,omitempty"`
 
 	// Mode: standalone | cascade
 	Mode string `json:"mode,omitempty"`
@@ -54,6 +56,7 @@ type XrayCascadeConfig struct {
 	UpstreamPubKey   string            `json:"upstream_public_key"`
 	UpstreamShortID  string            `json:"upstream_short_id"`
 	UpstreamAuthUUID string            `json:"upstream_auth_uuid"`
+	Strategy         string            `json:"strategy,omitempty"`
 	Rules            []XrayCascadeRule `json:"rules,omitempty"`
 }
 

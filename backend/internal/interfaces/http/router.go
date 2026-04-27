@@ -23,6 +23,7 @@ type Deps struct {
 	User   *handler.UserHandler
 	Peer   *handler.PeerHandler
 	Server *handler.ServerHandler
+	Config *handler.ConfigHandler
 	Stats  *handler.StatsHandler
 	Invite *handler.InviteHandler
 	Audit  *handler.AuditHandler
@@ -39,7 +40,7 @@ func NewRouter(d Deps) http.Handler {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE"},
-		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-Id", "X-Agent-Token"},
+		AllowedHeaders:   []string{"Authorization", "Content-Type", "X-Request-Id", "X-Agent-Token", "X-Node-ID", "X-Node-Secret"},
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
@@ -63,7 +64,9 @@ func NewRouter(d Deps) http.Handler {
 		r.With(mw.RateLimit(10, 5*time.Minute)).Post("/{token}/redeem", d.Invite.Redeem)
 	})
 
+	r.Post("/api/v1/agent/register", d.Server.RegisterAgent)
 	r.Post("/api/v1/agent/heartbeat", d.Server.Heartbeat)
+	r.Get("/install-node.sh", d.Server.InstallNodeScript)
 
 	r.Group(func(r chi.Router) {
 		r.Use(mw.Auth(d.Tokens))
@@ -91,6 +94,15 @@ func NewRouter(d Deps) http.Handler {
 				r.Post("/", d.Server.Create)
 				r.Get("/", d.Server.List)
 				r.Delete("/{id}", d.Server.Delete)
+				r.Get("/{id}/check", d.Server.Check)
+			})
+
+			r.Route("/api/v1/configs", func(r chi.Router) {
+				r.Post("/", d.Config.Create)
+				r.Post("/{id}/activate", d.Config.Activate)
+			})
+			r.Route("/api/v1/servers/{serverID}/configs", func(r chi.Router) {
+				r.Get("/", d.Config.ListByServer)
 			})
 
 			r.Post("/api/v1/admin/servers/{id}/redeploy", d.Peer.Redeploy)

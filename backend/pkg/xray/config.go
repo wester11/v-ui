@@ -3,7 +3,9 @@ package xray
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -28,6 +30,25 @@ func GenerateX25519() (privateB64, publicB64 string, err error) {
 	}
 	enc := func(b []byte) string { return base64URLNoPad(b) }
 	return enc(priv[:]), enc(pub), nil
+}
+
+func PublicKeyFromPrivate(privateB64 string) (string, error) {
+	privateB64 = strings.TrimSpace(privateB64)
+	if privateB64 == "" {
+		return "", errors.New("private key is empty")
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(privateB64)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) != 32 {
+		return "", errors.New("private key must be 32 bytes")
+	}
+	pub, err := curve25519.X25519(raw, curve25519.Basepoint)
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(pub), nil
 }
 
 // GenerateShortID returns a 16-char hex shortId for Reality.
@@ -129,6 +150,10 @@ func RenderServerConfig(cfg domain.XrayConfig, peers []XrayPeer) ([]byte, error)
 		})
 	}
 
+	if len(cfg.RawConfig) > 0 {
+		return renderRawConfig(cfg, clients)
+	}
+
 	port := cfg.InboundPort
 	if port == 0 {
 		port = 443
@@ -224,6 +249,160 @@ func RenderServerConfig(cfg domain.XrayConfig, peers []XrayPeer) ([]byte, error)
 		"routing":   map[string]any{"rules": rules},
 	}
 	return json.MarshalIndent(out, "", "  ")
+}
+
+func renderRawConfig(cfg domain.XrayConfig, clients []map[string]any) ([]byte, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(cfg.RawConfig, &raw); err != nil {
+		return nil, fmt.Errorf("invalid raw xray config: %w", err)
+	}
+
+	inbounds, _ := raw["inbounds"].([]any)
+	for i := range inbounds {
+		inb, ok := inbounds[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		proto, _ := inb["protocol"].(string)
+		if proto != "vless" {
+			continue
+		}
+		settings, _ := inb["settings"].(map[string]any)
+		if settings == nil {
+			settings = map[string]any{}
+		}
+		settings["clients"] = clients
+		inb["settings"] = settings
+		inbounds[i] = inb
+	}
+	raw["inbounds"] = inbounds
+
+	if cfg.Mode == "cascade" && cfg.Cascade != nil {
+		mergeCascadeIntoRaw(raw, cfg)
+	}
+	return json.MarshalIndent(raw, "", "  ")
+}
+
+func mergeCascadeIntoRaw(raw map[string]any, cfg domain.XrayConfig) {
+	outbounds, _ := raw["outbounds"].([]any)
+	hasCascadeOutbound := false
+	for _, ob := range outbounds {
+		obb, ok := ob.(map[string]any)
+		if !ok {
+			continue
+		}
+		if tag, _ := obb["tag"].(string); tag == "cascade-upstream" {
+			hasCascadeOutbound = true
+			break
+		}
+	}
+	if !hasCascadeOutbound {
+		outbounds = append(outbounds, map[string]any{
+			"protocol": "vless",
+			"tag":      "cascade-upstream",
+			"settings": map[string]any{
+				"vnext": []any{map[string]any{
+					"address": cfg.Cascade.UpstreamHost,
+					"port":    cfg.Cascade.UpstreamPort,
+					"users": []any{map[string]any{
+						"id":         cfg.Cascade.UpstreamAuthUUID,
+						"encryption": "none",
+						"flow":       ifEmpty(cfg.Flow, "xtls-rprx-vision"),
+					}},
+				}},
+			},
+			"streamSettings": map[string]any{
+				"network":  "tcp",
+				"security": "reality",
+				"realitySettings": map[string]any{
+					"serverName":  ifEmpty(cfg.Cascade.UpstreamSNI, cfg.Cascade.UpstreamHost),
+					"publicKey":   cfg.Cascade.UpstreamPubKey,
+					"shortId":     cfg.Cascade.UpstreamShortID,
+					"fingerprint": ifEmpty(cfg.Fingerprint, "chrome"),
+				},
+			},
+		})
+	}
+	raw["outbounds"] = outbounds
+
+	routing, _ := raw["routing"].(map[string]any)
+	if routing == nil {
+		routing = map[string]any{}
+	}
+	rules, _ := routing["rules"].([]any)
+	if len(rules) == 0 {
+		rules = []any{map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"}}
+	}
+	for _, rr := range cfg.Cascade.Rules {
+		if rule := cascadeRoutingRule(rr); rule != nil {
+			rules = append(rules, rule)
+		}
+	}
+	rules = append(rules, map[string]any{"type": "field", "outboundTag": "cascade-upstream"})
+	routing["rules"] = rules
+	raw["routing"] = routing
+}
+
+func ExtractAdvancedMeta(raw []byte) (domain.XrayConfig, error) {
+	var cfg domain.XrayConfig
+	var root map[string]any
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return cfg, err
+	}
+
+	inbounds, _ := root["inbounds"].([]any)
+	for _, in := range inbounds {
+		inb, ok := in.(map[string]any)
+		if !ok {
+			continue
+		}
+		proto, _ := inb["protocol"].(string)
+		if proto != "vless" {
+			continue
+		}
+		if p, ok := inb["port"].(float64); ok && p > 0 {
+			cfg.InboundPort = uint16(p)
+		}
+		stream, _ := inb["streamSettings"].(map[string]any)
+		reality, _ := stream["realitySettings"].(map[string]any)
+		if sn, ok := reality["serverNames"].([]any); ok && len(sn) > 0 {
+			if s, _ := sn[0].(string); s != "" {
+				cfg.SNI = s
+			}
+		}
+		if sid, ok := reality["shortIds"].([]any); ok {
+			for _, s := range sid {
+				if ss, _ := s.(string); ss != "" {
+					cfg.ShortIDs = append(cfg.ShortIDs, ss)
+				}
+			}
+		}
+		if fp, ok := reality["fingerprint"].(string); ok {
+			cfg.Fingerprint = fp
+		}
+		if pk, ok := reality["privateKey"].(string); ok {
+			cfg.PrivateKey = pk
+			pub, _ := PublicKeyFromPrivate(pk)
+			cfg.PublicKey = pub
+		}
+		break
+	}
+	if cfg.InboundPort == 0 {
+		cfg.InboundPort = 443
+	}
+	if cfg.SNI == "" {
+		cfg.SNI = "www.cloudflare.com"
+	}
+	if cfg.Fingerprint == "" {
+		cfg.Fingerprint = "chrome"
+	}
+	if cfg.Flow == "" {
+		cfg.Flow = "xtls-rprx-vision"
+	}
+	if len(cfg.ShortIDs) == 0 {
+		cfg.ShortIDs = []string{""}
+	}
+	return cfg, nil
 }
 
 func cascadeRoutingRule(rule domain.XrayCascadeRule) map[string]any {

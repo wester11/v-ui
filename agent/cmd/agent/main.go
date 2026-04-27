@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +24,8 @@ import (
 type config struct {
 	ControlURL  string
 	AgentToken  string
+	NodeID      string
+	Secret      string
 
 	// Какой transport включить на этом агенте.
 	// wireguard | amneziawg | xray   (default: amneziawg).
@@ -60,7 +64,7 @@ func main() {
 
 	wgMgr := wg.New(cfg.WGInterface)
 
-	ctrl, err := client.New(cfg.ControlURL, cfg.AgentToken, client.TLSConfig{
+	ctrl, err := client.New(cfg.ControlURL, cfg.AgentToken, cfg.NodeID, cfg.Secret, client.TLSConfig{
 		CAFile:   cfg.ControlCA,
 		CertFile: cfg.ControlCert,
 		KeyFile:  cfg.ControlKey,
@@ -90,6 +94,12 @@ func main() {
 		log.Fatal().Err(err).Msg("transport start")
 	}
 	log.Info().Str("transport", trans.Name()).Msg("transport up")
+
+	hostname, _ := os.Hostname()
+	ip := primaryIP()
+	if err := ctrl.Register(ctx, hostname, ip, envOr("AGENT_VERSION", "dev")); err != nil {
+		log.Warn().Err(err).Msg("register failed")
+	}
 
 	// === HTTP API: control-plane вызывает /v1/peers и /v1/xray/reload ===
 	mux := http.NewServeMux()
@@ -243,6 +253,8 @@ func loadConfig() config {
 	return config{
 		ControlURL: envOr("CONTROL_URL", "https://control:8080"),
 		AgentToken: envOr("AGENT_TOKEN", ""),
+		NodeID:     envOr("NODE_ID", ""),
+		Secret:     envOr("SECRET", ""),
 		Protocol:   envOr("AGENT_PROTOCOL", "amneziawg"),
 
 		WGInterface: envOr("WG_IFACE", "wg0"),
@@ -268,4 +280,36 @@ func loadConfig() config {
 		ControlKey:  envOr("CONTROL_KEY", ""),
 		InsecureTLS: envOr("AGENT_INSECURE_TLS", "false") == "true",
 	}
+}
+
+func primaryIP() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok || ipNet.IP == nil || ipNet.IP.IsLoopback() {
+				continue
+			}
+			ip := ipNet.IP.To4()
+			if ip == nil {
+				continue
+			}
+			s := ip.String()
+			if strings.HasPrefix(s, "127.") {
+				continue
+			}
+			return s
+		}
+	}
+	return ""
 }

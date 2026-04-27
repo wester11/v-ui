@@ -3,8 +3,9 @@ package usecase
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
-	"encoding/json"
+	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
@@ -15,251 +16,221 @@ import (
 
 	"github.com/voidwg/control/internal/application/port"
 	"github.com/voidwg/control/internal/domain"
-	"github.com/voidwg/control/internal/infrastructure/obfuscation"
-	"github.com/voidwg/control/pkg/xray"
 )
 
 type ServerService struct {
-	repo port.ServerRepository
-	keys port.KeyGenerator
-	mtls port.MTLSIssuer
+	repo          port.ServerRepository
+	publicBaseURL string
 }
 
-func NewServerService(r port.ServerRepository, k port.KeyGenerator, m port.MTLSIssuer) *ServerService {
-	return &ServerService{repo: r, keys: k, mtls: m}
+func NewServerService(r port.ServerRepository, _ port.KeyGenerator, _ port.MTLSIssuer, publicBaseURL string) *ServerService {
+	return &ServerService{repo: r, publicBaseURL: strings.TrimSuffix(strings.TrimSpace(publicBaseURL), "/")}
 }
 
 type RegisterServerInput struct {
-	Name        string
-	Protocol    domain.Protocol // "" -> wireguard
-	Endpoint    string
-	ListenPort  uint16
-	TCPPort     uint16
-	TLSPort     uint16
-	Subnet      string
-	DNS         []string
-	ObfsEnabled bool
-
-	// Xray-specific
-	XrayInboundPort uint16
-	XraySNI         string
-	XrayDest        string
-	XrayShortIDsN   int
-	XrayFingerprint string
-	XrayFlow        string
-
-	// Advanced Xray routing mode
-	Mode              string
-	CascadeUpstreamID string
-	CascadeRules      []domain.XrayCascadeRule
+	Name     string
+	Endpoint string
 }
 
 type RegisterResult struct {
-	Server    *domain.Server
-	AgentCA   []byte
-	AgentCert []byte
-	AgentKey  []byte
+	Server         *domain.Server
+	NodeID         string
+	Secret         string
+	InstallCommand string
+	ComposeSnippet string
+}
+
+type RegisterAgentInput struct {
+	NodeID       string
+	Secret       string
+	Hostname     string
+	IP           string
+	AgentVersion string
 }
 
 func (s *ServerService) Register(ctx context.Context, in RegisterServerInput) (*RegisterResult, error) {
-	proto := in.Protocol
-	if proto == "" {
-		proto = domain.ProtoWireGuard
-	}
-	if !proto.Valid() {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
 		return nil, domain.ErrValidation
 	}
 
-	dns := make([]netip.Addr, 0, len(in.DNS))
-	for _, d := range in.DNS {
-		if a, err := netip.ParseAddr(d); err == nil {
-			dns = append(dns, a)
-		}
+	endpoint := strings.TrimSpace(in.Endpoint)
+	if endpoint == "" {
+		return nil, domain.ErrValidation
 	}
 
-	tokenBytes := make([]byte, 32)
-	_, _ = rand.Read(tokenBytes)
-	now := time.Now().UTC()
-
-	srvID := uuid.New()
-	caPEM, certPEM, keyPEM, fp, err := s.mtls.IssueAgentCert(srvID)
+	nodeSecret, err := randomHex(24)
+	if err != nil {
+		return nil, err
+	}
+	agentToken, err := randomHex(32)
 	if err != nil {
 		return nil, err
 	}
 
-	srv := &domain.Server{
-		ID:                   srvID,
-		Name:                 in.Name,
-		Protocol:             proto,
-		Endpoint:             in.Endpoint,
-		ListenPort:           in.ListenPort,
-		TCPPort:              in.TCPPort,
-		TLSPort:              in.TLSPort,
-		DNS:                  dns,
-		ObfsEnabled:          in.ObfsEnabled,
-		AgentToken:           hex.EncodeToString(tokenBytes),
-		AgentCertFingerprint: fp,
-		CreatedAt:            now,
-		UpdatedAt:            now,
+	now := time.Now().UTC()
+	server := &domain.Server{
+		ID:        uuid.New(),
+		Name:      name,
+		NodeID:    uuid.New(),
+		NodeSecret: nodeSecret,
+		Status:    "pending",
+		Protocol:  domain.ProtoNone,
+		Endpoint:  endpoint,
+		Online:    false,
+		AgentToken: agentToken, // legacy compatibility
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
-
-	switch proto {
-	case domain.ProtoWireGuard, domain.ProtoAmneziaWG:
-		prefix, err := netip.ParsePrefix(in.Subnet)
-		if err != nil {
-			return nil, domain.ErrValidation
-		}
-		_, pub, err := s.keys.NewKeyPair()
-		if err != nil {
-			return nil, err
-		}
-		srv.PublicKey = pub
-		srv.Subnet = prefix
-		if proto == domain.ProtoAmneziaWG {
-			srv.AWG = obfuscation.RandomParams()
-			srv.ObfsEnabled = true
-		}
-	case domain.ProtoXray:
-		priv, pub, err := xray.GenerateX25519()
-		if err != nil {
-			return nil, err
-		}
-		n := in.XrayShortIDsN
-		if n <= 0 || n > 16 {
-			n = 3
-		}
-		shortIDs := make([]string, 0, n)
-		for i := 0; i < n; i++ {
-			sid, err := xray.GenerateShortID()
-			if err != nil {
-				return nil, err
-			}
-			shortIDs = append(shortIDs, sid)
-		}
-		port := in.XrayInboundPort
-		if port == 0 {
-			port = 443
-		}
-		dest := in.XrayDest
-		if dest == "" {
-			dest = "www.cloudflare.com:443"
-		}
-		sni := in.XraySNI
-		if sni == "" {
-			sni = "www.cloudflare.com"
-		}
-		fingerprint := in.XrayFingerprint
-		if fingerprint == "" {
-			fingerprint = "chrome"
-		}
-		flow := in.XrayFlow
-		if flow == "" {
-			flow = "xtls-rprx-vision"
-		}
-
-		xc := domain.XrayConfig{
-			InboundPort:  port,
-			SNI:          sni,
-			Dest:         dest,
-			PrivateKey:   priv,
-			PublicKey:    pub,
-			ShortIDs:     shortIDs,
-			Fingerprint:  fingerprint,
-			Flow:         flow,
-			Mode:         "standalone",
-		}
-
-		mode := strings.ToLower(strings.TrimSpace(in.Mode))
-		if mode == "" {
-			mode = "standalone"
-		}
-		if mode != "standalone" && mode != "cascade" {
-			return nil, domain.ErrValidation
-		}
-
-		if mode == "cascade" {
-			upID, err := uuid.Parse(strings.TrimSpace(in.CascadeUpstreamID))
-			if err != nil {
-				return nil, domain.ErrValidation
-			}
-			if upID == srvID {
-				return nil, domain.ErrValidation
-			}
-			upstream, err := s.repo.GetByID(ctx, upID)
-			if err != nil {
-				return nil, err
-			}
-			if upstream.Protocol != domain.ProtoXray {
-				return nil, domain.ErrValidation
-			}
-			upCfg, err := domain.XrayConfigFromJSON(upstream.ProtocolConfig)
-			if err != nil {
-				return nil, domain.ErrValidation
-			}
-			if upCfg.PublicKey == "" || len(upCfg.ShortIDs) == 0 {
-				return nil, domain.ErrValidation
-			}
-
-			host, upstreamPort := splitEndpointHostPort(upstream.Endpoint)
-			if host == "" {
-				return nil, domain.ErrValidation
-			}
-			if upCfg.InboundPort > 0 {
-				upstreamPort = upCfg.InboundPort
-			}
-
-			authUUID := uuid.NewString()
-			xc.Mode = "cascade"
-			xc.Cascade = &domain.XrayCascadeConfig{
-				UpstreamServerID: upID.String(),
-				UpstreamHost:     host,
-				UpstreamPort:     upstreamPort,
-				UpstreamSNI:      ifEmpty(upCfg.SNI, host),
-				UpstreamPubKey:   upCfg.PublicKey,
-				UpstreamShortID:  upCfg.ShortIDs[0],
-				UpstreamAuthUUID: authUUID,
-				Rules:            normalizeCascadeRules(in.CascadeRules),
-			}
-
-			ensureSystemClient(&upCfg, authUUID, "cascade:"+srvID.String(), ifEmpty(upCfg.Flow, "xtls-rprx-vision"))
-			upRaw, err := json.Marshal(upCfg)
-			if err != nil {
-				return nil, err
-			}
-			upstream.ProtocolConfig = upRaw
-			upstream.UpdatedAt = now
-			if err := s.repo.Update(ctx, upstream); err != nil {
-				return nil, err
-			}
-		}
-
-		raw, err := json.Marshal(xc)
-		if err != nil {
-			return nil, err
-		}
-		srv.ProtocolConfig = raw
-	}
-
-	if err := s.repo.Create(ctx, srv); err != nil {
+	if err := s.repo.Create(ctx, server); err != nil {
 		return nil, err
 	}
+
+	controlURL := s.controlURL(endpoint)
+	installURL := strings.TrimSuffix(controlURL, "/") + "/install-node.sh"
+	installCmd := fmt.Sprintf("bash <(curl -Ls %s) --control-url=%s --node-id=%s --secret=%s",
+		shellQuote(installURL), shellQuote(controlURL), shellQuote(server.NodeID.String()), shellQuote(server.NodeSecret))
+
+	snippet := fmt.Sprintf(`services:
+  void-node:
+    image: void/node:latest
+    network_mode: host
+    restart: always
+    environment:
+      - CONTROL_URL=%s
+      - NODE_ID=%s
+      - SECRET=%s
+`, controlURL, server.NodeID.String(), server.NodeSecret)
+
 	return &RegisterResult{
-		Server:    srv,
-		AgentCA:   caPEM,
-		AgentCert: certPEM,
-		AgentKey:  keyPEM,
+		Server:         server,
+		NodeID:         server.NodeID.String(),
+		Secret:         server.NodeSecret,
+		InstallCommand: installCmd,
+		ComposeSnippet: snippet,
 	}, nil
 }
 
-func ensureSystemClient(cfg *domain.XrayConfig, id, email, flow string) {
-	for _, c := range cfg.SystemClients {
-		if c.ID == id {
-			return
+func (s *ServerService) RegisterAgent(ctx context.Context, in RegisterAgentInput) (*domain.Server, error) {
+	nodeID, err := uuid.Parse(strings.TrimSpace(in.NodeID))
+	if err != nil {
+		return nil, domain.ErrValidation
+	}
+	server, err := s.repo.GetByNodeID(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if subtle.ConstantTimeCompare([]byte(server.NodeSecret), []byte(in.Secret)) != 1 {
+		return nil, domain.ErrInvalidCredential
+	}
+
+	now := time.Now().UTC()
+	server.Hostname = strings.TrimSpace(in.Hostname)
+	server.IP = strings.TrimSpace(in.IP)
+	server.AgentVersion = strings.TrimSpace(in.AgentVersion)
+	server.Status = "online"
+	server.Online = true
+	server.LastHeartbeat = &now
+	server.UpdatedAt = now
+
+	// keep endpoint synced to reported ip if endpoint did not include explicit port
+	if server.Endpoint == "" || !strings.Contains(server.Endpoint, ":") {
+		host := server.IP
+		if host == "" {
+			host = server.Hostname
+		}
+		if host != "" {
+			server.Endpoint = net.JoinHostPort(host, "7443")
 		}
 	}
-	cfg.SystemClients = append(cfg.SystemClients, domain.XraySystemClient{
-		ID: id, Email: email, Flow: flow,
-	})
+
+	if err := s.repo.Update(ctx, server); err != nil {
+		return nil, err
+	}
+	return server, nil
+}
+
+func (s *ServerService) Heartbeat(ctx context.Context, token string) (*domain.Server, error) {
+	server, err := s.repo.GetByToken(ctx, strings.TrimSpace(token))
+	if err != nil {
+		return nil, err
+	}
+	return s.markOnline(ctx, server)
+}
+
+func (s *ServerService) HeartbeatByNode(ctx context.Context, nodeID, secret string) (*domain.Server, error) {
+	id, err := uuid.Parse(strings.TrimSpace(nodeID))
+	if err != nil {
+		return nil, domain.ErrValidation
+	}
+	server, err := s.repo.GetByNodeID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if subtle.ConstantTimeCompare([]byte(server.NodeSecret), []byte(strings.TrimSpace(secret))) != 1 {
+		return nil, domain.ErrInvalidCredential
+	}
+	return s.markOnline(ctx, server)
+}
+
+func (s *ServerService) markOnline(ctx context.Context, server *domain.Server) (*domain.Server, error) {
+	now := time.Now().UTC()
+	server.Status = "online"
+	server.Online = true
+	server.LastHeartbeat = &now
+	server.UpdatedAt = now
+	if err := s.repo.Update(ctx, server); err != nil {
+		return nil, err
+	}
+	return server, nil
+}
+
+func (s *ServerService) List(ctx context.Context) ([]*domain.Server, error) { return s.repo.List(ctx) }
+
+func (s *ServerService) Get(ctx context.Context, id uuid.UUID) (*domain.Server, error) {
+	return s.repo.GetByID(ctx, id)
+}
+
+func (s *ServerService) Delete(ctx context.Context, id uuid.UUID) error { return s.repo.Delete(ctx, id) }
+
+func (s *ServerService) controlURL(endpoint string) string {
+	if s.publicBaseURL != "" {
+		return s.publicBaseURL
+	}
+	host := endpoint
+	if h, p, err := net.SplitHostPort(endpoint); err == nil {
+		if p == "80" || p == "443" {
+			host = h
+		}
+	}
+	if host == "" {
+		host = "panel.example.com"
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return "https://" + host
+	}
+	if strings.HasPrefix(host, "http://") || strings.HasPrefix(host, "https://") {
+		return host
+	}
+	return "https://" + host
+}
+
+func randomHex(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func shellQuote(v string) string {
+	if v == "" {
+		return "''"
+	}
+	if !strings.ContainsAny(v, " \t\n'\"\\$`") {
+		return v
+	}
+	return "'" + strings.ReplaceAll(v, "'", "'\"'\"'") + "'"
 }
 
 func normalizeCascadeRules(in []domain.XrayCascadeRule) []domain.XrayCascadeRule {
@@ -282,7 +253,10 @@ func normalizeCascadeRules(in []domain.XrayCascadeRule) []domain.XrayCascadeRule
 		out = append(out, domain.XrayCascadeRule{Match: m, Outbound: o})
 	}
 	if len(out) == 0 {
-		return []domain.XrayCascadeRule{{Match: "geoip:ru", Outbound: "direct"}, {Match: "geoip:!ru", Outbound: "proxy"}}
+		return []domain.XrayCascadeRule{
+			{Match: "geoip:ru", Outbound: "direct"},
+			{Match: "geoip:!ru", Outbound: "proxy"},
+		}
 	}
 	return out
 }
@@ -308,23 +282,3 @@ func ifEmpty(v, def string) string {
 	}
 	return v
 }
-
-func (s *ServerService) Heartbeat(ctx context.Context, token string) (*domain.Server, error) {
-	srv, err := s.repo.GetByToken(ctx, token)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now().UTC()
-	srv.LastHeartbeat = &now
-	srv.Online = true
-	if err := s.repo.Update(ctx, srv); err != nil {
-		return nil, err
-	}
-	return srv, nil
-}
-
-func (s *ServerService) List(ctx context.Context) ([]*domain.Server, error) { return s.repo.List(ctx) }
-func (s *ServerService) Get(ctx context.Context, id uuid.UUID) (*domain.Server, error) {
-	return s.repo.GetByID(ctx, id)
-}
-func (s *ServerService) Delete(ctx context.Context, id uuid.UUID) error { return s.repo.Delete(ctx, id) }

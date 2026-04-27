@@ -11,6 +11,7 @@ services:
       - ./backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
       - ./backend/migrations/002_phase4.sql:/docker-entrypoint-initdb.d/002_phase4.sql:ro
       - ./backend/migrations/003_phase5.sql:/docker-entrypoint-initdb.d/003_phase5.sql:ro
+      - ./backend/migrations/004_server_config_split.sql:/docker-entrypoint-initdb.d/004_server_config_split.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U voidwg"]
       interval: 5s
@@ -63,6 +64,8 @@ services:
       AGENT_PROTOCOL: "${AGENT_PROTOCOL:-amneziawg}"
       CONTROL_URL:    "${CONTROL_URL:-http://api:8080}"
       AGENT_TOKEN:    "${AGENT_1_TOKEN:-}"
+      NODE_ID:        "${AGENT_1_NODE_ID:-}"
+      SECRET:         "${AGENT_1_SECRET:-}"
       CONTROL_CA:     "${CONTROL_CA:-}"
       CONTROL_CERT:   "${CONTROL_CERT:-}"
       CONTROL_KEY:    "${CONTROL_KEY:-}"
@@ -98,6 +101,8 @@ services:
       AGENT_PROTOCOL: "xray"
       CONTROL_URL:    "${CONTROL_URL:-http://api:8080}"
       AGENT_TOKEN:    "${AGENT_X_TOKEN:-}"
+      NODE_ID:        "${AGENT_X_NODE_ID:-}"
+      SECRET:         "${AGENT_X_SECRET:-}"
       CONTROL_CA:     "${CONTROL_CA:-}"
       CONTROL_CERT:   "${CONTROL_CERT:-}"
       CONTROL_KEY:    "${CONTROL_KEY:-}"

@@ -21,13 +21,17 @@ export default function Peers() {
   const [confirm, setConfirm] = useState<Peer | null>(null)
   const [busy, setBusy] = useState(false)
   const [view, setView] = useState<{ peer: Peer; config: string } | null>(null)
+  const readyServers = useMemo(() => servers.filter((s) => s.protocol && s.protocol !== 'none'), [servers])
 
   async function reload() {
     try {
       const [p, s] = await Promise.all([api.peers.list(), api.servers.list().catch(() => [])])
       setPeers(p)
       setServers(s as Server[])
-      if (!serverID && (s as Server[]).length) setServerID((s as Server[])[0].id)
+      if (!serverID && (s as Server[]).length) {
+        const firstReady = (s as Server[]).find((srv) => srv.protocol && srv.protocol !== 'none')
+        if (firstReady) setServerID(firstReady.id)
+      }
     } catch (e) {
       toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'load failed')
     }
@@ -113,7 +117,7 @@ export default function Peers() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <Button variant="primary" onClick={() => setCreating(true)} disabled={!servers.length}>
+          <Button variant="primary" onClick={() => setCreating(true)} disabled={!readyServers.length}>
             + New client
           </Button>
         </div>
@@ -154,7 +158,7 @@ export default function Peers() {
           <Empty
             title={search ? 'No clients match your search' : 'No clients yet'}
             sub={search ? 'Try a different query.' : 'Provision first client to issue config.'}
-            action={!search && servers.length > 0 ? <Button variant="primary" onClick={() => setCreating(true)}>+ New client</Button> : undefined}
+            action={!search && readyServers.length > 0 ? <Button variant="primary" onClick={() => setCreating(true)}>+ New client</Button> : undefined}
           />
         ) : (
           <div className="table-wrap">
@@ -222,14 +226,14 @@ export default function Peers() {
             label="Server"
             value={serverID}
             onChange={(e) => setServerID(e.target.value)}
-            disabled={!servers.length}
+            disabled={!readyServers.length}
           >
-            {servers.map((s) => (
+            {readyServers.map((s) => (
               <option key={s.id} value={s.id}>{s.name} - {s.endpoint}</option>
             ))}
           </Select>
           {createErr && <div className="text-danger text-sm">{createErr}</div>}
-          {!servers.length && <div className="text-warn text-sm">No servers available. Register one first.</div>}
+          {!readyServers.length && <div className="text-warn text-sm">No active configs. Create config in Configs page first.</div>}
         </form>
       </Modal>
 

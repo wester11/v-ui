@@ -20,6 +20,10 @@ func NewServerRepo(db *pgxpool.Pool) *ServerRepo { return &ServerRepo{db: db} }
 
 func (r *ServerRepo) Create(ctx context.Context, s *domain.Server) error {
 	dns := dnsJoin(s.DNS)
+	subnet := ""
+	if s.Subnet.IsValid() {
+		subnet = s.Subnet.String()
+	}
 	awg, err := json.Marshal(s.AWG)
 	if err != nil {
 		return err
@@ -30,19 +34,25 @@ func (r *ServerRepo) Create(ctx context.Context, s *domain.Server) error {
 	}
 	_, err = r.db.Exec(ctx, `
 		INSERT INTO servers
-		    (id,name,protocol,protocol_config,
-		     endpoint,public_key,listen_port,tcp_port,tls_port,subnet,dns,
-		     obfs_enabled,awg_params,agent_token,agent_cert_fingerprint,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-		s.ID, s.Name, string(s.Protocol), pcfg,
-		s.Endpoint, s.PublicKey, int(s.ListenPort), int(s.TCPPort), int(s.TLSPort),
-		s.Subnet.String(), dns, s.ObfsEnabled, awg, s.AgentToken, s.AgentCertFingerprint,
+		    (id,name,node_id,node_secret,hostname,ip,status,agent_version,
+		     protocol,protocol_config,endpoint,public_key,listen_port,tcp_port,tls_port,subnet,dns,
+		     obfs_enabled,awg_params,agent_token,agent_cert_fingerprint,online,last_heartbeat,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
+		        $9,$10,$11,$12,$13,$14,$15,$16,$17,
+		        $18,$19,$20,$21,$22,$23,$24,$25)`,
+		s.ID, s.Name, s.NodeID, s.NodeSecret, s.Hostname, s.IP, s.Status, s.AgentVersion,
+		string(s.Protocol), pcfg, s.Endpoint, s.PublicKey, int(s.ListenPort), int(s.TCPPort), int(s.TLSPort),
+		subnet, dns, s.ObfsEnabled, awg, s.AgentToken, s.AgentCertFingerprint, s.Online, s.LastHeartbeat,
 		s.CreatedAt, s.UpdatedAt)
 	return err
 }
 
 func (r *ServerRepo) Update(ctx context.Context, s *domain.Server) error {
 	dns := dnsJoin(s.DNS)
+	subnet := ""
+	if s.Subnet.IsValid() {
+		subnet = s.Subnet.String()
+	}
 	awg, err := json.Marshal(s.AWG)
 	if err != nil {
 		return err
@@ -52,14 +62,17 @@ func (r *ServerRepo) Update(ctx context.Context, s *domain.Server) error {
 		pcfg = []byte("{}")
 	}
 	_, err = r.db.Exec(ctx, `
-		UPDATE servers SET name=$2,protocol=$3,protocol_config=$4,
-		                  endpoint=$5,listen_port=$6,tcp_port=$7,tls_port=$8,
-		                  subnet=$9,dns=$10,obfs_enabled=$11,awg_params=$12,
-		                  online=$13,last_heartbeat=$14,updated_at=NOW()
+		UPDATE servers SET
+		    name=$2,node_id=$3,node_secret=$4,hostname=$5,ip=$6,status=$7,agent_version=$8,
+		    protocol=$9,protocol_config=$10,endpoint=$11,public_key=$12,
+		    listen_port=$13,tcp_port=$14,tls_port=$15,subnet=$16,dns=$17,
+		    obfs_enabled=$18,awg_params=$19,agent_token=$20,agent_cert_fingerprint=$21,
+		    online=$22,last_heartbeat=$23,updated_at=NOW()
 		WHERE id=$1`,
-		s.ID, s.Name, string(s.Protocol), pcfg,
-		s.Endpoint, int(s.ListenPort), int(s.TCPPort), int(s.TLSPort),
-		s.Subnet.String(), dns, s.ObfsEnabled, awg, s.Online, s.LastHeartbeat)
+		s.ID, s.Name, s.NodeID, s.NodeSecret, s.Hostname, s.IP, s.Status, s.AgentVersion,
+		string(s.Protocol), pcfg, s.Endpoint, s.PublicKey,
+		int(s.ListenPort), int(s.TCPPort), int(s.TLSPort), subnet, dns,
+		s.ObfsEnabled, awg, s.AgentToken, s.AgentCertFingerprint, s.Online, s.LastHeartbeat)
 	return err
 }
 
@@ -70,6 +83,11 @@ func (r *ServerRepo) GetByID(ctx context.Context, id uuid.UUID) (*domain.Server,
 
 func (r *ServerRepo) GetByToken(ctx context.Context, token string) (*domain.Server, error) {
 	row := r.db.QueryRow(ctx, serverSelect+` WHERE agent_token=$1`, token)
+	return scanServer(row)
+}
+
+func (r *ServerRepo) GetByNodeID(ctx context.Context, nodeID uuid.UUID) (*domain.Server, error) {
+	row := r.db.QueryRow(ctx, serverSelect+` WHERE node_id=$1`, nodeID)
 	return scanServer(row)
 }
 
@@ -97,29 +115,27 @@ func (r *ServerRepo) Delete(ctx context.Context, id uuid.UUID) error {
 
 func (r *ServerRepo) CountOnline(ctx context.Context) (int, int, error) {
 	var total, online int
-	err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*), COALESCE(SUM(CASE WHEN online THEN 1 ELSE 0 END),0) FROM servers`).
-		Scan(&total, &online)
+	err := r.db.QueryRow(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN online THEN 1 ELSE 0 END),0) FROM servers`).Scan(&total, &online)
 	return total, online, err
 }
 
-const serverSelect = `SELECT id,name,protocol,protocol_config,
-                            endpoint,public_key,listen_port,tcp_port,tls_port,
-                            subnet,dns,obfs_enabled,awg_params,
-                            agent_token,agent_cert_fingerprint,
-                            online,last_heartbeat,created_at,updated_at FROM servers`
+const serverSelect = `SELECT id,name,node_id,node_secret,hostname,ip,status,agent_version,
+                             protocol,protocol_config,endpoint,public_key,listen_port,tcp_port,tls_port,
+                             subnet,dns,obfs_enabled,awg_params,agent_token,agent_cert_fingerprint,
+                             online,last_heartbeat,created_at,updated_at
+                      FROM servers`
 
 func scanServer(s scanner) (*domain.Server, error) {
 	srv := &domain.Server{}
 	var subnet, dns, proto string
 	var lp, tcpp, tlsp int
 	var awg, pcfg []byte
-	err := s.Scan(&srv.ID, &srv.Name, &proto, &pcfg,
-		&srv.Endpoint, &srv.PublicKey,
-		&lp, &tcpp, &tlsp,
-		&subnet, &dns, &srv.ObfsEnabled, &awg,
-		&srv.AgentToken, &srv.AgentCertFingerprint,
-		&srv.Online, &srv.LastHeartbeat, &srv.CreatedAt, &srv.UpdatedAt)
+	err := s.Scan(
+		&srv.ID, &srv.Name, &srv.NodeID, &srv.NodeSecret, &srv.Hostname, &srv.IP, &srv.Status, &srv.AgentVersion,
+		&proto, &pcfg, &srv.Endpoint, &srv.PublicKey, &lp, &tcpp, &tlsp,
+		&subnet, &dns, &srv.ObfsEnabled, &awg, &srv.AgentToken, &srv.AgentCertFingerprint,
+		&srv.Online, &srv.LastHeartbeat, &srv.CreatedAt, &srv.UpdatedAt,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound

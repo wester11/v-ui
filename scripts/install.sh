@@ -569,6 +569,10 @@ configure_tls() {
 
     env_set "TLS_MODE"     "$TLS_MODE"
     env_set "PANEL_DOMAIN" "$PANEL_DOMAIN"
+
+    local base_url="https://${PANEL_DOMAIN}"
+    [ "${PANEL_HTTPS_PORT}" = "443" ] || base_url="${base_url}:${PANEL_HTTPS_PORT}"
+    env_set "PUBLIC_BASE_URL" "$base_url"
 }
 
 configure_firewall() {

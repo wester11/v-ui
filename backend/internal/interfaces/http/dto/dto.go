@@ -2,6 +2,7 @@
 package dto
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,103 +90,110 @@ type CascadeRuleDTO struct {
 }
 
 type ServerResponse struct {
-	ID                uuid.UUID        `json:"id"`
-	Name              string           `json:"name"`
-	Protocol          string           `json:"protocol"`
-	Mode              string           `json:"mode,omitempty"`
-	Endpoint          string           `json:"endpoint"`
-	PublicKey         string           `json:"public_key,omitempty"`
-	ListenPort        uint16           `json:"listen_port,omitempty"`
-	TCPPort           uint16           `json:"tcp_port,omitempty"`
-	TLSPort           uint16           `json:"tls_port,omitempty"`
-	Subnet            string           `json:"subnet,omitempty"`
-	ObfsEnabled       bool             `json:"obfs_enabled"`
-	AWG               AWGParamsDTO     `json:"awg,omitempty"`
-	XrayInbound       uint16           `json:"xray_inbound_port,omitempty"`
-	XraySNI           string           `json:"xray_sni,omitempty"`
-	XrayPubKey        string           `json:"xray_public_key,omitempty"`
-	CascadeUpstreamID string           `json:"cascade_upstream_id,omitempty"`
-	CascadeRules      []CascadeRuleDTO `json:"cascade_rules,omitempty"`
-	Online            bool             `json:"online"`
-	LastHeartbeat     *time.Time       `json:"last_heartbeat,omitempty"`
+	ID            uuid.UUID  `json:"id"`
+	Name          string     `json:"name"`
+	NodeID        uuid.UUID  `json:"node_id"`
+	Endpoint      string     `json:"endpoint"`
+	Hostname      string     `json:"hostname,omitempty"`
+	IP            string     `json:"ip,omitempty"`
+	Status        string     `json:"status"`
+	AgentVersion  string     `json:"agent_version,omitempty"`
+	Online        bool       `json:"online"`
+	LastHeartbeat *time.Time `json:"last_heartbeat,omitempty"`
+	Protocol      string     `json:"protocol,omitempty"`
+	Mode          string     `json:"mode,omitempty"`
 }
 
 func ServerFromDomain(s *domain.Server) ServerResponse {
 	resp := ServerResponse{
 		ID:            s.ID,
 		Name:          s.Name,
-		Protocol:      string(s.Protocol),
+		NodeID:        s.NodeID,
 		Endpoint:      s.Endpoint,
-		PublicKey:     s.PublicKey,
-		ListenPort:    s.ListenPort,
-		TCPPort:       s.TCPPort,
-		TLSPort:       s.TLSPort,
-		ObfsEnabled:   s.ObfsEnabled,
+		Hostname:      s.Hostname,
+		IP:            s.IP,
+		Status:        s.Status,
+		AgentVersion:  s.AgentVersion,
 		Online:        s.Online,
 		LastHeartbeat: s.LastHeartbeat,
-		Mode:          "standalone",
-	}
-	if s.Subnet.IsValid() {
-		resp.Subnet = s.Subnet.String()
-	}
-	if s.Protocol == domain.ProtoAmneziaWG {
-		resp.AWG = AWGParamsDTO{
-			Jc: s.AWG.Jc, Jmin: s.AWG.Jmin, Jmax: s.AWG.Jmax,
-			S1: s.AWG.S1, S2: s.AWG.S2,
-			H1: s.AWG.H1, H2: s.AWG.H2, H3: s.AWG.H3, H4: s.AWG.H4,
-		}
+		Protocol:      string(s.Protocol),
 	}
 	if s.Protocol == domain.ProtoXray {
 		if xc, err := domain.XrayConfigFromJSON(s.ProtocolConfig); err == nil {
-			resp.XrayInbound = xc.InboundPort
-			resp.XraySNI = xc.SNI
-			resp.XrayPubKey = xc.PublicKey
-			if xc.Mode != "" {
-				resp.Mode = xc.Mode
-			}
-			if xc.Cascade != nil {
-				resp.CascadeUpstreamID = xc.Cascade.UpstreamServerID
-				for _, r := range xc.Cascade.Rules {
-					resp.CascadeRules = append(resp.CascadeRules, CascadeRuleDTO{Match: r.Match, Outbound: r.Outbound})
-				}
-			}
+			resp.Mode = ifEmpty(xc.Mode, "standalone")
 		}
 	}
 	return resp
 }
 
 type CreateServerRequest struct {
-	Name        string   `json:"name"`
-	Protocol    string   `json:"protocol"` // wireguard | amneziawg | xray
-	Mode        string   `json:"mode,omitempty"` // standalone | cascade
-	Endpoint    string   `json:"endpoint"`
-	ListenPort  uint16   `json:"listen_port"`
-	TCPPort     uint16   `json:"tcp_port"`
-	TLSPort     uint16   `json:"tls_port"`
-	Subnet      string   `json:"subnet"`
-	DNS         []string `json:"dns"`
-	ObfsEnabled bool     `json:"obfs_enabled"`
-
-	// Xray-only
-	XrayInboundPort uint16 `json:"xray_inbound_port,omitempty"`
-	XraySNI         string `json:"xray_sni,omitempty"`
-	XrayDest        string `json:"xray_dest,omitempty"`
-	XrayShortIDsN   int    `json:"xray_short_ids,omitempty"`
-	XrayFingerprint string `json:"xray_fingerprint,omitempty"`
-	XrayFlow        string `json:"xray_flow,omitempty"`
-
-	// Cascade-only (xray mode=cascade)
-	CascadeUpstreamID string           `json:"cascade_upstream_id,omitempty"`
-	CascadeRules      []CascadeRuleDTO `json:"cascade_rules,omitempty"`
+	Name     string `json:"name"`
+	Endpoint string `json:"endpoint"`
 }
 
 // CreateServerResponse is returned once at registration time with agent secrets.
 type CreateServerResponse struct {
 	ServerResponse
-	AgentToken string `json:"agent_token"`
-	AgentCA    string `json:"agent_ca"`
-	AgentCert  string `json:"agent_cert"`
-	AgentKey   string `json:"agent_key"`
+	NodeID        string `json:"node_id"`
+	Secret        string `json:"secret"`
+	InstallCommand string `json:"install_command"`
+	ComposeSnippet string `json:"compose_snippet"`
+}
+
+type ConfigResponse struct {
+	ID          uuid.UUID `json:"id"`
+	ServerID    uuid.UUID `json:"server_id"`
+	Name        string    `json:"name"`
+	Protocol    string    `json:"protocol"`
+	Template    string    `json:"template"`
+	SetupMode   string    `json:"setup_mode"`
+	RoutingMode string    `json:"routing_mode"`
+	IsActive    bool      `json:"is_active"`
+	Settings    any       `json:"settings,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func ConfigFromDomain(cfg *domain.VPNConfig, includeSettings bool) ConfigResponse {
+	out := ConfigResponse{
+		ID:          cfg.ID,
+		ServerID:    cfg.ServerID,
+		Name:        cfg.Name,
+		Protocol:    string(cfg.Protocol),
+		Template:    string(cfg.Template),
+		SetupMode:   string(cfg.SetupMode),
+		RoutingMode: string(cfg.RoutingMode),
+		IsActive:    cfg.IsActive,
+		CreatedAt:   cfg.CreatedAt,
+		UpdatedAt:   cfg.UpdatedAt,
+	}
+	if includeSettings && len(cfg.Settings) > 0 {
+		var parsed any
+		if err := json.Unmarshal(cfg.Settings, &parsed); err == nil {
+			out.Settings = parsed
+		}
+	}
+	return out
+}
+
+type CreateConfigRequest struct {
+	ServerID      uuid.UUID        `json:"server_id"`
+	Name          string           `json:"name"`
+	Protocol      string           `json:"protocol"`
+	Template      string           `json:"template"`
+	SetupMode     string           `json:"setup_mode"`
+	RoutingMode   string           `json:"routing_mode"`
+	Activate      bool             `json:"activate"`
+	RawJSON       string           `json:"raw_json,omitempty"`
+	InboundPort   uint16           `json:"inbound_port,omitempty"`
+	SNI           string           `json:"sni,omitempty"`
+	Dest          string           `json:"dest,omitempty"`
+	Fingerprint   string           `json:"fingerprint,omitempty"`
+	Flow          string           `json:"flow,omitempty"`
+	ShortIDsCount int              `json:"short_ids_count,omitempty"`
+	CascadeUpstreamID string       `json:"cascade_upstream_id,omitempty"`
+	CascadeStrategy string         `json:"cascade_strategy,omitempty"`
+	CascadeRules   []CascadeRuleDTO `json:"cascade_rules,omitempty"`
 }
 
 // ===== Peer =====
@@ -327,4 +335,11 @@ func AuditFromDomain(e *domain.AuditEvent) AuditEntry {
 type ErrorResponse struct {
 	Error string `json:"error"`
 	Code  string `json:"code,omitempty"`
+}
+
+func ifEmpty(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
 }

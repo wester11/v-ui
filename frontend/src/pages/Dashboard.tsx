@@ -4,7 +4,7 @@ import { api, ApiError } from '../api/client'
 import { useAuth } from '../store/auth'
 import type { Server, Stats } from '../types'
 import { Badge, Button, Empty, SkeletonRows, StatCard, StatusDot } from '../components/ui'
-import { formatBytes, formatNumber, formatRelative, maskKey } from '../lib/format'
+import { formatBytes, formatNumber, formatRelative } from '../lib/format'
 
 export default function Dashboard() {
   const user = useAuth((s) => s.user)
@@ -125,7 +125,7 @@ export default function Dashboard() {
                       <th>Endpoint</th>
                       <th>Status</th>
                       <th>Last heartbeat</th>
-                      <th>Public key</th>
+                      <th>Node ID</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -141,7 +141,7 @@ export default function Dashboard() {
                         <td><code>{s.endpoint}</code></td>
                         <td><StatusDot online={s.online} /></td>
                         <td className="text-dim">{formatRelative(s.last_heartbeat)}</td>
-                        <td><code>{maskKey(s.public_key ?? s.xray_public_key)}</code></td>
+                        <td><code>{s.node_id.slice(0, 8)}...</code></td>
                       </tr>
                     ))}
                   </tbody>

@@ -1,10 +1,13 @@
 import { useAuth } from '../store/auth'
 import type {
   AuditEntry,
+  Config,
+  CreateConfigRequest,
   CreatePeerResponse,
   CreateServerResponse,
   FleetHealthResult,
   FleetRedeployResult,
+  NodeCheckResult,
   Peer,
   Server,
   Stats,
@@ -94,29 +97,20 @@ export const api = {
 
   servers: {
     list: () => request<Server[]>('/api/v1/servers'),
-    create: (body: {
-      name: string
-      protocol: 'wireguard' | 'amneziawg' | 'xray'
-      mode?: 'standalone' | 'cascade'
-      endpoint: string
-      listen_port?: number
-      subnet?: string
-      dns?: string[]
-      obfs_enabled: boolean
-      xray_inbound_port?: number
-      xray_sni?: string
-      xray_dest?: string
-      xray_short_ids?: number
-      xray_fingerprint?: string
-      xray_flow?: string
-      cascade_upstream_id?: string
-      cascade_rules?: Array<{ match: string; outbound: 'direct' | 'proxy' }>
-    }) =>
+    create: (body: { name: string; endpoint: string }) =>
       request<CreateServerResponse>('/api/v1/servers', {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+    check: (id: string) => request<NodeCheckResult>(`/api/v1/servers/${id}/check`),
     delete: (id: string) => request<void>(`/api/v1/servers/${id}`, { method: 'DELETE' }),
+  },
+
+  configs: {
+    create: (body: CreateConfigRequest) =>
+      request<Config>('/api/v1/configs', { method: 'POST', body: JSON.stringify(body) }),
+    listByServer: (serverID: string) => request<Config[]>(`/api/v1/servers/${serverID}/configs`),
+    activate: (id: string) => request<void>(`/api/v1/configs/${id}/activate`, { method: 'POST' }),
   },
 
   users: {

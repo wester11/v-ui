@@ -6,7 +6,7 @@ export interface User {
   created_at: string
 }
 
-export type Protocol = 'wireguard' | 'amneziawg' | 'xray'
+export type Protocol = 'none' | 'wireguard' | 'amneziawg' | 'xray'
 export type ServerMode = 'standalone' | 'cascade'
 
 export interface CascadeRule {
@@ -17,22 +17,59 @@ export interface CascadeRule {
 export interface Server {
   id: string
   name: string
-  protocol: Protocol
-  mode?: ServerMode
+  node_id: string
   endpoint: string
-  public_key?: string
-  listen_port?: number
-  tcp_port?: number
-  tls_port?: number
-  subnet?: string
-  obfs_enabled: boolean
-  xray_inbound_port?: number
-  xray_sni?: string
-  xray_public_key?: string
-  cascade_upstream_id?: string
-  cascade_rules?: CascadeRule[]
+  hostname?: string
+  ip?: string
+  status: 'pending' | 'online' | 'offline' | 'error'
+  agent_version?: string
   online: boolean
   last_heartbeat?: string | null
+  protocol?: Protocol
+  mode?: ServerMode
+}
+
+export interface NodeCheckResult {
+  server_id: string
+  status: 'online' | 'offline'
+  last_heartbeat?: string | null
+  ip?: string
+  hostname?: string
+  agent_version?: string
+}
+
+export interface Config {
+  id: string
+  server_id: string
+  name: string
+  protocol: Exclude<Protocol, 'none'>
+  template: 'vless_reality' | 'grpc_reality' | 'cascade' | 'empty'
+  setup_mode: 'simple' | 'advanced'
+  routing_mode: 'simple' | 'advanced' | 'cascade'
+  is_active: boolean
+  settings?: unknown
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateConfigRequest {
+  server_id: string
+  name: string
+  protocol: 'xray'
+  template: 'vless_reality' | 'grpc_reality' | 'cascade' | 'empty'
+  setup_mode: 'simple' | 'advanced'
+  routing_mode: 'simple' | 'advanced' | 'cascade'
+  activate: boolean
+  raw_json?: string
+  inbound_port?: number
+  sni?: string
+  dest?: string
+  fingerprint?: string
+  flow?: string
+  short_ids_count?: number
+  cascade_upstream_id?: string
+  cascade_strategy?: string
+  cascade_rules?: CascadeRule[]
 }
 
 export interface Peer {
@@ -74,7 +111,10 @@ export interface Stats {
 }
 
 export interface CreateServerResponse extends Server {
-  agent_token?: string
+  node_id: string
+  secret: string
+  install_command: string
+  compose_snippet: string
 }
 
 export interface AuditEntry {
@@ -107,3 +147,4 @@ export interface FleetHealthResult {
   last_heartbeat?: string | null
   error?: string
 }
+
