@@ -71,6 +71,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/wester11/v-ui/main/scripts/ins
 | `INSTALL_DIR`       | `/opt/void-wg`                                | куда ставить                                     |
 | `PANEL_HTTP_PORT`   | `80`                                          | порт HTTP (редирект на HTTPS, ACME challenge)    |
 | `PANEL_HTTPS_PORT`  | `443`                                         | порт HTTPS-панели                                |
+| `PANEL_RANDOM_HTTPS_PORT` | `0`                                     | `1` = случайный HTTPS-порт (иначе фиксированный `443`) |
 | `WG_PORT`           | `51820`                                       | UDP-порт WireGuard                               |
 | `OBFS_PORT`         | `51821`                                       | UDP-порт обфускации                              |
 | `ADMIN_EMAIL`       | `admin@local`                                 | email админа                                     |
@@ -87,6 +88,22 @@ TLS_MODE=letsencrypt PANEL_DOMAIN=vpn.example.com LE_EMAIL=ops@example.com \
 bash <(curl -Ls https://raw.githubusercontent.com/wester11/v-ui/main/scripts/install.sh)
 ```
 
+
+### ERR_CONNECTION_REFUSED (панель не открывается)
+
+Если install завершился успешно, но браузер пишет `ERR_CONNECTION_REFUSED`, обычно причина одна из двух:
+
+1. Закрыт inbound-порт у провайдера/VPS firewall (Security Group).
+2. Панель поднята на случайном HTTPS-порту, а снаружи открыт только `443`.
+
+Быстрый production-фикс: закрепить панель на `443` и перезапустить install идемпотентно:
+
+```bash
+cd /opt/void-wg
+PANEL_HTTPS_PORT=443 PANEL_RANDOM_HTTPS_PORT=0 bash scripts/install.sh
+```
+
+После этого открывайте URL из финального вывода installer (с секретным path).
 ## CLI: `v-wg`
 
 После установки в системе появляется команда `v-wg` (символическая ссылка на `scripts/v-wg.sh`). Без аргументов — интерактивное TUI-меню в стиле `x-ui`:

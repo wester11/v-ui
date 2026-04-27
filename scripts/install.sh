@@ -22,6 +22,7 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/void-wg}"
 PANEL_HTTP_PORT="${PANEL_HTTP_PORT:-80}"
 PANEL_HTTPS_PORT_INPUT="${PANEL_HTTPS_PORT:-}"
 PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-443}"
+PANEL_RANDOM_HTTPS_PORT="${PANEL_RANDOM_HTTPS_PORT:-0}"
 WG_PORT="${WG_PORT:-51820}"
 OBFS_PORT="${OBFS_PORT:-51821}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@local}"
@@ -371,18 +372,53 @@ ensure_panel_access_endpoint() {
         PANEL_ENTRY_TOKEN="$(openssl rand -hex 16)"
     fi
 
-    # Randomize HTTPS host port once (unless explicitly provided at launch).
+    # Randomize HTTPS host port only when explicitly requested.
+    # Default behavior is stable production port 443.
     if [ -z "$PANEL_HTTPS_PORT_RANDOMIZED" ]; then
-        if [ -z "$PANEL_HTTPS_PORT_INPUT" ] && [ "${PANEL_HTTPS_PORT:-443}" = "443" ]; then
-            PANEL_HTTPS_PORT="$(pick_random_https_port)"
-            log "Using randomized HTTPS port: $PANEL_HTTPS_PORT"
-        fi
-        PANEL_HTTPS_PORT_RANDOMIZED="true"
+        case "${PANEL_RANDOM_HTTPS_PORT,,}" in
+            1|true|yes)
+                if [ -z "$PANEL_HTTPS_PORT_INPUT" ] && [ "${PANEL_HTTPS_PORT:-443}" = "443" ]; then
+                    PANEL_HTTPS_PORT="$(pick_random_https_port)"
+                    log "Using randomized HTTPS port: $PANEL_HTTPS_PORT"
+                fi
+                PANEL_HTTPS_PORT_RANDOMIZED="true"
+                ;;
+            *)
+                PANEL_HTTPS_PORT_RANDOMIZED="false"
+                PANEL_HTTPS_PORT="${PANEL_HTTPS_PORT:-443}"
+                ;;
+        esac
+    fi
+
+    # Backward-compatibility: old installs may have randomized port persisted in .env.
+    # Unless random mode is explicitly requested again, normalize back to 443.
+    if [ "$PANEL_HTTPS_PORT_RANDOMIZED" = "true" ]; then
+        case "${PANEL_RANDOM_HTTPS_PORT,,}" in
+            1|true|yes) ;;
+            *)
+                if [ -z "$PANEL_HTTPS_PORT_INPUT" ]; then
+                    PANEL_HTTPS_PORT="443"
+                    PANEL_HTTPS_PORT_RANDOMIZED="false"
+                    log "Random HTTPS port disabled; switching panel back to 443"
+                fi
+                ;;
+        esac
+    fi
+
+    if [ -n "$PANEL_HTTPS_PORT_INPUT" ]; then
+        PANEL_HTTPS_PORT="$PANEL_HTTPS_PORT_INPUT"
+        PANEL_HTTPS_PORT_RANDOMIZED="false"
+        log "Using explicit HTTPS port: $PANEL_HTTPS_PORT"
+    fi
+
+    if [ "$PANEL_HTTPS_PORT_RANDOMIZED" = "true" ] && [ "$PANEL_HTTPS_PORT" != "443" ]; then
+        warn "Random HTTPS port is enabled. Ensure provider/cloud firewall allows TCP/$PANEL_HTTPS_PORT."
     fi
 
     env_set "PANEL_HTTPS_PORT" "$PANEL_HTTPS_PORT"
     env_set "PANEL_ENTRY_TOKEN" "$PANEL_ENTRY_TOKEN"
     env_set "PANEL_HTTPS_PORT_RANDOMIZED" "$PANEL_HTTPS_PORT_RANDOMIZED"
+    env_set "PANEL_RANDOM_HTTPS_PORT" "$PANEL_RANDOM_HTTPS_PORT"
 }
 
 ask_domain_and_validate() {
