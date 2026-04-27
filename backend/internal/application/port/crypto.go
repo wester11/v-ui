@@ -36,10 +36,17 @@ type Claims struct {
 	Exp    time.Time
 }
 
-// AgentTransport — связь с удалёнными агентами (gRPC/HTTP).
+// AgentTransport — связь с удалёнными агентами.
+//
+// Phase 5.1 (refactor под Remnawave-style):
+//   * для WG/AWG — runtime peer-mutation (ApplyPeer / RevokePeer)
+//   * для Xray — НЕ peer-mutation. Control-plane целиком собирает config.json
+//     и пушит на агента через DeployConfig. Агент только пишет файл и
+//     перезапускает контейнер xray. Никакого in-memory состояния peer'ов.
 type AgentTransport interface {
 	ApplyPeer(ctx context.Context, server *domain.Server, peer *domain.Peer) error
 	RevokePeer(ctx context.Context, server *domain.Server, peerID uuid.UUID) error
+	DeployConfig(ctx context.Context, server *domain.Server, configJSON []byte) error
 	Health(ctx context.Context, server *domain.Server) error
 }
 

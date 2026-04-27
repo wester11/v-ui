@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -37,9 +38,10 @@ type config struct {
 	HTTPListen  string
 	AWG         awg.Params
 
-	// Xray
-	XrayBin    string
-	XrayConfig string
+	// Xray (stateless model)
+	XrayConfig    string // путь к config.json (общий volume с контейнером xray)
+	XrayContainer string // docker-имя sidecar-контейнера xray
+	XrayHealth    string // host:port для TCP health-probe
 
 	// mTLS to control-plane
 	ControlCA   string
@@ -80,7 +82,7 @@ func main() {
 		}
 		trans = t
 	case "xray":
-		trans = transport.NewXray(cfg.XrayBin, cfg.XrayConfig, &log)
+		trans = transport.NewXray(cfg.XrayConfig, cfg.XrayContainer, cfg.XrayHealth, &log)
 	default:
 		log.Fatal().Str("protocol", cfg.Protocol).Msg("unknown protocol")
 	}
@@ -95,9 +97,16 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	// /v1/peers — runtime peer-mutation для WG/AWG.
+	// Для xray этот endpoint отдаёт 410 Gone — все peer-операции для xray
+	// идут через /v1/xray/deploy (полный config push).
 	mux.HandleFunc("/v1/peers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Agent-Token") != cfg.AgentToken {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if cfg.Protocol == "xray" {
+			http.Error(w, "use /v1/xray/deploy for xray peer changes", http.StatusGone)
 			return
 		}
 		switch r.Method {
@@ -125,22 +134,57 @@ func main() {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 		}
 	})
-	mux.HandleFunc("/v1/xray/reload", func(w http.ResponseWriter, r *http.Request) {
+
+	// /v1/xray/deploy — получить полный config.json от control-plane,
+	// записать атомарно, перезапустить xray-контейнер.
+	mux.HandleFunc("/v1/xray/deploy", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Agent-Token") != cfg.AgentToken {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		var in transport.XrayInbound
-		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if err := trans.Reload(in); err != nil {
-			log.Error().Err(err).Msg("xray reload")
-			w.WriteHeader(http.StatusInternalServerError)
+		xt, ok := trans.(*transport.XrayTransport)
+		if !ok {
+			http.Error(w, "this agent is not in xray mode", http.StatusConflict)
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1 MiB cap
+		if err != nil {
+			http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := xt.ApplyConfig(body); err != nil {
+			log.Error().Err(err).Msg("ApplyConfig")
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := xt.Restart(); err != nil {
+			log.Error().Err(err).Msg("xray Restart")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// /v1/xray/health — простой TCP-probe inbound-порта.
+	mux.HandleFunc("/v1/xray/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Agent-Token") != cfg.AgentToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		xt, ok := trans.(*transport.XrayTransport)
+		if !ok {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		if err := xt.HealthCheck(); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	})
 
 	go func() {
@@ -215,8 +259,9 @@ func loadConfig() config {
 			H1: envU32("AWG_H1"), H2: envU32("AWG_H2"), H3: envU32("AWG_H3"), H4: envU32("AWG_H4"),
 		},
 
-		XrayBin:    envOr("XRAY_BIN", "xray"),
-		XrayConfig: envOr("XRAY_CONFIG", "/etc/xray/config.json"),
+		XrayConfig:    envOr("XRAY_CONFIG", "/etc/xray/config.json"),
+		XrayContainer: envOr("XRAY_CONTAINER", "xray"),
+		XrayHealth:    envOr("XRAY_HEALTH", "127.0.0.1:443"),
 
 		ControlCA:   envOr("CONTROL_CA", ""),
 		ControlCert: envOr("CONTROL_CERT", ""),

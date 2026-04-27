@@ -80,6 +80,46 @@ type XrayPeer struct {
 	ShortID string
 }
 
+// BuildFullConfig — pure-function построение полного config.json под сервер.
+//
+// Это единственная точка, где формируется Xray-конфиг. Агент ничего не строит,
+// только пишет полученный JSON и рестартует контейнер.
+//
+//	server: domain.Server с Protocol=xray и заполненным ProtocolConfig
+//	peers : ВСЕ active peer'ы этого сервера
+//
+// Возвращает готовый config.json или ошибку, если ProtocolConfig невалиден.
+func BuildFullConfig(server *domain.Server, peers []*domain.Peer) ([]byte, error) {
+	if server.Protocol != domain.ProtoXray {
+		return nil, fmt.Errorf("BuildFullConfig: server is not xray (protocol=%s)", server.Protocol)
+	}
+	xc, err := domain.XrayConfigFromJSON(server.ProtocolConfig)
+	if err != nil {
+		return nil, fmt.Errorf("BuildFullConfig: parse protocol_config: %w", err)
+	}
+	xpeers := make([]XrayPeer, 0, len(peers))
+	for _, p := range peers {
+		if !p.Enabled || p.Protocol != domain.ProtoXray || p.XrayUUID == "" {
+			continue
+		}
+		flow := p.XrayFlow
+		if flow == "" {
+			flow = xc.Flow
+		}
+		email := p.Name
+		if email == "" {
+			email = p.ID.String()
+		}
+		xpeers = append(xpeers, XrayPeer{
+			UUID:    p.XrayUUID,
+			Email:   email,
+			Flow:    flow,
+			ShortID: p.XrayShortID,
+		})
+	}
+	return RenderServerConfig(xc, xpeers)
+}
+
 // RenderServerConfig — генерирует config.json для Xray-core (серверная сторона).
 //
 // Inbound: VLESS на :443 с Reality, dest на легитимный TLS-сервер.

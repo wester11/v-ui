@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"encoding/json"
 	"net/netip"
 	"strings"
 
@@ -81,15 +80,11 @@ func (s *PeerService) createWG(ctx context.Context, srv *domain.Server, in Creat
 
 func (s *PeerService) createXray(ctx context.Context, srv *domain.Server, in CreatePeerInput) (*domain.Peer, string, error) {
 	xc, err := domain.XrayConfigFromJSON(srv.ProtocolConfig)
-	if err != nil {
-		return nil, "", domain.ErrValidation
-	}
-	if len(xc.ShortIDs) == 0 {
+	if err != nil || len(xc.ShortIDs) == 0 {
 		return nil, "", domain.ErrValidation
 	}
 
 	vlessUUID := uuid.NewString()
-	// Round-robin: peer'ы распределяются по пулу shortId по hash UUID.
 	shortID := pickShortID(xc.ShortIDs, vlessUUID)
 	flow := xc.Flow
 	if flow == "" {
@@ -100,11 +95,42 @@ func (s *PeerService) createXray(ctx context.Context, srv *domain.Server, in Cre
 	if err := s.peers.Create(ctx, peer); err != nil {
 		return nil, "", err
 	}
-	// Уведомить агента о новом peer (тот перерендерит config.json и reload).
-	if err := s.agents.ApplyPeer(ctx, srv, peer); err != nil {
-		return peer, xray.RenderVLESSURI(srv, peer, xc.PublicView(shortID)), err
+	// Stateless deploy: пересобираем ВЕСЬ config.json и пушим агенту.
+	// Agent просто пишет файл и рестартует контейнер (никакого in-memory peer-state).
+	cfgURI := xray.RenderVLESSURI(srv, peer, xc.PublicView(shortID))
+	if err := s.deployXray(ctx, srv); err != nil {
+		// peer создан в БД — admin может потом нажать /api/v1/admin/servers/{id}/redeploy
+		return peer, cfgURI, err
 	}
-	return peer, xray.RenderVLESSURI(srv, peer, xc.PublicView(shortID)), nil
+	return peer, cfgURI, nil
+}
+
+// deployXray — собирает полный xray config.json и пушит агенту.
+// Безопасно вызывать idempotent (например, при добавлении/удалении peer'а
+// или при ручном /redeploy).
+func (s *PeerService) deployXray(ctx context.Context, srv *domain.Server) error {
+	allPeers, err := s.peers.ListByServer(ctx, srv.ID)
+	if err != nil {
+		return err
+	}
+	cfg, err := xray.BuildFullConfig(srv, allPeers)
+	if err != nil {
+		return err
+	}
+	return s.agents.DeployConfig(ctx, srv, cfg)
+}
+
+// Redeploy — пересобрать config xray-сервера и запушить.
+// Public-метод для admin-endpoint /api/v1/admin/servers/{id}/redeploy.
+func (s *PeerService) Redeploy(ctx context.Context, serverID uuid.UUID) error {
+	srv, err := s.servers.GetByID(ctx, serverID)
+	if err != nil {
+		return err
+	}
+	if srv.Protocol != domain.ProtoXray {
+		return nil // для WG/AWG нечего пересобирать
+	}
+	return s.deployXray(ctx, srv)
 }
 
 func (s *PeerService) Revoke(ctx context.Context, peerID uuid.UUID) error {
@@ -116,6 +142,14 @@ func (s *PeerService) Revoke(ctx context.Context, peerID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	if srv.Protocol == domain.ProtoXray {
+		// stateless: удалить из БД -> пересобрать полный config -> deploy.
+		if err := s.peers.Delete(ctx, peerID); err != nil {
+			return err
+		}
+		return s.deployXray(ctx, srv)
+	}
+	// WG/AWG — runtime mutation
 	if err := s.agents.RevokePeer(ctx, srv, p.ID); err != nil {
 		return err
 	}
@@ -203,5 +237,3 @@ func pickShortID(pool []string, key string) string {
 	return pool[int(h)%len(pool)]
 }
 
-// ensure json import remains used even if no caller marshals here directly
-var _ = json.RawMessage{}

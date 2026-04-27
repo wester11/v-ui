@@ -105,4 +105,32 @@ func (h *PeerHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// Redeploy — POST /api/v1/admin/servers/{id}/redeploy.
+// Operator+ может вручную пересобрать xray config и запушить агенту.
+// Используется при desync (агент перезапустился, drift конфигов).
+func (h *PeerHandler) Redeploy(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, domain.ErrValidation)
+		return
+	}
+	uid := mw.UserIDFromCtx(r.Context())
+	if err := h.svc.Redeploy(r.Context(), id); err != nil {
+		h.audit.Log(r.Context(), domain.AuditEvent{
+			ActorID: ptrUUID(uid), Action: "server.redeploy", Result: "error",
+			TargetType: "server", TargetID: id.String(),
+			IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+			Meta: map[string]any{"err": err.Error()},
+		})
+		writeErr(w, err)
+		return
+	}
+	h.audit.Log(r.Context(), domain.AuditEvent{
+		ActorID: ptrUUID(uid), Action: "server.redeploy", Result: "ok",
+		TargetType: "server", TargetID: id.String(),
+		IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func ptrUUID(u uuid.UUID) *uuid.UUID { return &u }

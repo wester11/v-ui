@@ -102,15 +102,20 @@ services:
       CONTROL_CERT:   "${CONTROL_CERT:-}"
       CONTROL_KEY:    "${CONTROL_KEY:-}"
       AGENT_INSECURE_TLS: "${AGENT_INSECURE_TLS:-false}"
-      XRAY_BIN:    "/usr/bin/true"               # сам процесс xray в отдельном контейнере
-      XRAY_CONFIG: "/etc/xray/config.json"
+      XRAY_CONFIG:    "/etc/xray/config.json"
+      XRAY_CONTAINER: "void-wg-xray"
+      XRAY_HEALTH:    "127.0.0.1:443"
     volumes:
       - xray_cfg:/etc/xray
+      # docker.sock — агент рестартует контейнер xray через `docker restart`.
+      # Stateless модель: agent не управляет xray-процессом сам.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - xray
 
   xray:
     image: teddysun/xray:latest
+    container_name: void-wg-xray
     profiles: ["xray"]
     restart: unless-stopped
     network_mode: host

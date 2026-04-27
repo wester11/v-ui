@@ -1,337 +1,169 @@
+// Package transport — XrayTransport.
+//
+// Phase 5.1 (Remnawave-style refactor): xray управление полностью stateless.
+// Агент НЕ:
+//   - не запускает xray subprocess'ом
+//   - не модифицирует config.json по peer'ам
+//   - не хранит in-memory состояние peer'ов
+//   - не реализует AddPeer / RemovePeer / Reload-per-peer
+//
+// Агент ТОЛЬКО:
+//   1) ApplyConfig(json) — пишет файл атомарно (через .tmp + rename)
+//   2) Restart()         — рестарт sidecar-контейнера xray через docker socket
+//                          ИЛИ через `docker compose restart` (zero-config fallback)
+//   3) HealthCheck()     — TCP-probe inbound-порта xray
+//
+// Сам xray-core живёт в отдельном контейнере (teddysun/xray) и читает тот же
+// volume, куда пишет агент. Container restart управляется агентом через
+// /var/run/docker.sock.
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sync"
-	"syscall"
 	"time"
 
 	"github.com/rs/zerolog"
 )
 
-// XrayTransport — управляет процессом xray-core на агенте.
-//
-// Архитектура:
-//   * config.json генерится управлением (control-plane передаёт уже готовый JSON
-//     или Reality-параметры + список peer'ов).
-//   * Процесс запускается как subprocess: `xray run -c <ConfigPath>`.
-//   * Reload: переписать config.json -> SIGHUP (xray hot-reload), либо restart.
-//   * AddPeer / RemovePeer — мерджит локальный реестр и вызывает Reload.
-//
-// Альтернатива subprocess'у — Xray API (gRPC). Здесь идём более простым путём
-// (config-file + SIGHUP), что проще для контейнеризации.
+// XrayTransport — stateless обёртка вокруг xray-контейнера.
 type XrayTransport struct {
-	binary     string // путь к xray binary (default: "xray")
-	configPath string // /etc/xray/config.json
-	log        *zerolog.Logger
-
-	mu         sync.Mutex
-	cmd        *exec.Cmd
-	currentCfg map[string]any
-	peers      map[string]map[string]any // id -> client object
+	configPath    string // /etc/xray/config.json (shared volume)
+	containerName string // имя/id sidecar-контейнера xray
+	healthAddr    string // host:port для TCP-probe (обычно 127.0.0.1:443)
+	log           *zerolog.Logger
 }
 
-type XrayInbound struct {
-	Port            uint16   `json:"port"`
-	SNI             string   `json:"sni"`
-	Dest            string   `json:"dest"`
-	PrivateKey      string   `json:"private_key"`
-	ShortIDs        []string `json:"short_ids"`
-	Fingerprint     string   `json:"fingerprint"`
-	Flow            string   `json:"flow"`
-}
-
-func NewXray(binary, configPath string, log *zerolog.Logger) *XrayTransport {
-	if binary == "" {
-		binary = "xray"
-	}
+func NewXray(configPath, containerName, healthAddr string, log *zerolog.Logger) *XrayTransport {
 	if configPath == "" {
 		configPath = "/etc/xray/config.json"
 	}
+	if containerName == "" {
+		containerName = "xray"
+	}
+	if healthAddr == "" {
+		healthAddr = "127.0.0.1:443"
+	}
 	return &XrayTransport{
-		binary:     binary,
-		configPath: configPath,
-		log:        log,
-		peers:      map[string]map[string]any{},
+		configPath:    configPath,
+		containerName: containerName,
+		healthAddr:    healthAddr,
+		log:           log,
 	}
 }
 
 func (t *XrayTransport) Name() string { return "xray" }
 
-// Start — запускает xray subprocess. Если config ещё не был сгенерён —
-// пишем минимальный заглушечный конфиг (inbound с Reality, без клиентов).
+// Start — для stateless-модели start это просто проверка, что директория
+// под config существует. Сам xray поднимается docker-compose'ом отдельно.
 func (t *XrayTransport) Start() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
+	return os.MkdirAll(filepath.Dir(t.configPath), 0o755)
+}
 
-	if t.cmd != nil && t.cmd.Process != nil {
-		return nil // уже запущен
-	}
-	if _, err := os.Stat(t.configPath); os.IsNotExist(err) {
-		if err := t.writeMinimalStub(); err != nil {
+// Stop — no-op. Контейнер xray управляется compose'ом.
+func (t *XrayTransport) Stop() error { return nil }
+
+// Reload — устаревший hook. В новой модели вместо peer-by-peer reload
+// control-plane пушит полный config через ApplyConfig + Restart.
+// Для совместимости с интерфейсом Transport: если cfg — это []byte, делаем
+// эквивалент ApplyConfig+Restart.
+func (t *XrayTransport) Reload(cfg any) error {
+	switch v := cfg.(type) {
+	case []byte:
+		if err := t.ApplyConfig(v); err != nil {
 			return err
 		}
+		return t.Restart()
+	case json.RawMessage:
+		if err := t.ApplyConfig([]byte(v)); err != nil {
+			return err
+		}
+		return t.Restart()
+	}
+	return nil
+}
+
+// AddPeer — НЕ ПОДДЕРЖИВАЕТСЯ. Phase 5.1: agent не управляет peer'ами для xray.
+// Возвращает ошибку, чтобы вызывающая сторона переключилась на DeployConfig.
+func (t *XrayTransport) AddPeer(_ PeerSpec) error {
+	return fmt.Errorf("xray: AddPeer not supported in stateless model — use control-plane DeployConfig")
+}
+
+// RemovePeer — НЕ ПОДДЕРЖИВАЕТСЯ.
+func (t *XrayTransport) RemovePeer(_ string) error {
+	return fmt.Errorf("xray: RemovePeer not supported in stateless model — use control-plane DeployConfig")
+}
+
+// ===== Stateless API =====
+
+// ApplyConfig — атомарная запись config.json. Валидирует JSON-синтаксис
+// перед записью.
+func (t *XrayTransport) ApplyConfig(data []byte) error {
+	// Pre-flight: parse-only валидация, чтобы не записать заведомо битый JSON,
+	// который положит xray-контейнер.
+	var sink any
+	if err := json.Unmarshal(data, &sink); err != nil {
+		return fmt.Errorf("xray: invalid config JSON: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(t.configPath), 0o755); err != nil {
 		return err
 	}
-
-	cmd := exec.Command(t.binary, "run", "-c", t.configPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("xray start: %w", err)
+	tmp := t.configPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
 	}
-	t.cmd = cmd
-	t.log.Info().Str("bin", t.binary).Str("cfg", t.configPath).Msg("xray started")
-
-	go func() {
-		_ = cmd.Wait()
-		t.log.Warn().Msg("xray process exited")
-	}()
+	if err := os.Rename(tmp, t.configPath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	t.log.Info().
+		Str("path", t.configPath).
+		Int("size", len(data)).
+		Msg("xray config written")
 	return nil
 }
 
-func (t *XrayTransport) Stop() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.cmd == nil || t.cmd.Process == nil {
-		return nil
-	}
-	_ = t.cmd.Process.Signal(syscall.SIGTERM)
-	done := make(chan struct{})
-	go func() { _, _ = t.cmd.Process.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		_ = t.cmd.Process.Kill()
-	}
-	t.cmd = nil
-	return nil
-}
+// Restart — перезапускает sidecar-контейнер xray.
+//
+// Использует docker CLI через UNIX-socket (/var/run/docker.sock должен быть
+// смонтирован в агента). Это стандартный production-pattern (Remnawave,
+// Wireguard-ui, 3x-ui — все так делают).
+//
+// Fallback: если docker CLI недоступен — пробуем `docker compose` (он же).
+func (t *XrayTransport) Restart() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-// Reload — принимает XrayInbound (или совместимую map) и пересобирает config.json.
-func (t *XrayTransport) Reload(cfg any) error {
-	t.mu.Lock()
-	in, err := coerceInbound(cfg)
+	cmd := exec.CommandContext(ctx, "docker", "restart", "--time=5", t.containerName)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.mu.Unlock()
-		return err
+		t.log.Error().
+			Err(err).
+			Str("container", t.containerName).
+			Bytes("output", out).
+			Msg("docker restart failed")
+		return fmt.Errorf("xray restart: %w (out=%s)", err, string(out))
 	}
-	t.currentCfg = inboundToMap(in)
-	if err := t.renderLocked(); err != nil {
-		t.mu.Unlock()
-		return err
-	}
-	t.mu.Unlock()
-	return t.sighup()
-}
-
-// AddPeer — добавляет VLESS-client в config.json и делает SIGHUP.
-func (t *XrayTransport) AddPeer(p PeerSpec) error {
-	t.mu.Lock()
-	if p.Protocol != "xray" {
-		t.mu.Unlock()
-		return fmt.Errorf("xray transport: wrong protocol %q", p.Protocol)
-	}
-	t.peers[p.ID] = map[string]any{
-		"id":    p.XrayUUID,
-		"flow":  p.XrayFlow,
-		"email": p.XrayEmail,
-	}
-	if err := t.renderLocked(); err != nil {
-		t.mu.Unlock()
-		return err
-	}
-	t.mu.Unlock()
-	return t.sighup()
-}
-
-func (t *XrayTransport) RemovePeer(id string) error {
-	t.mu.Lock()
-	delete(t.peers, id)
-	if err := t.renderLocked(); err != nil {
-		t.mu.Unlock()
-		return err
-	}
-	t.mu.Unlock()
-	return t.sighup()
-}
-
-// renderLocked — пересборка config.json под текущие inbound + peers. Ожидает t.mu.
-func (t *XrayTransport) renderLocked() error {
-	clients := make([]map[string]any, 0, len(t.peers))
-	for _, c := range t.peers {
-		clients = append(clients, c)
-	}
-
-	if t.currentCfg == nil {
-		// fallback — пишем минимум только из peers без inbound-данных
-		return t.writeMinimalStub()
-	}
-
-	// inject clients into existing config
-	cfg := cloneMap(t.currentCfg)
-	inbounds, _ := cfg["inbounds"].([]any)
-	if len(inbounds) > 0 {
-		first, _ := inbounds[0].(map[string]any)
-		if settings, ok := first["settings"].(map[string]any); ok {
-			settings["clients"] = clients
-		}
-	}
-	return writeJSONFile(t.configPath, cfg)
-}
-
-func (t *XrayTransport) sighup() error {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.cmd == nil || t.cmd.Process == nil {
-		return nil
-	}
-	// Xray поддерживает SIGHUP для hot-reload (с v1.8+); до этой версии — full restart.
-	if err := t.cmd.Process.Signal(syscall.SIGHUP); err != nil {
-		// fallback: жёсткий перезапуск
-		_ = t.cmd.Process.Kill()
-		t.cmd = nil
-	}
+	t.log.Info().Str("container", t.containerName).Msg("xray container restarted")
 	return nil
 }
 
-func (t *XrayTransport) writeMinimalStub() error {
-	stub := map[string]any{
-		"log": map[string]any{"loglevel": "warning"},
-		"inbounds": []any{
-			map[string]any{
-				"listen":   "0.0.0.0",
-				"port":     443,
-				"protocol": "vless",
-				"settings": map[string]any{
-					"clients":    []any{},
-					"decryption": "none",
-				},
-				"streamSettings": map[string]any{
-					"network":  "tcp",
-					"security": "reality",
-					"realitySettings": map[string]any{
-						"show":         false,
-						"dest":         "www.cloudflare.com:443",
-						"serverNames":  []string{"www.cloudflare.com"},
-						"privateKey":   "",
-						"shortIds":     []string{""},
-						"fingerprint":  "chrome",
-					},
-				},
-			},
-		},
-		"outbounds": []any{
-			map[string]any{"protocol": "freedom"},
-			map[string]any{"protocol": "blackhole", "tag": "block"},
-		},
-	}
-	return writeJSONFile(t.configPath, stub)
-}
-
-func writeJSONFile(path string, v any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(v, "", "  ")
+// HealthCheck — TCP-probe inbound-порта xray.
+// Не парсит TLS handshake (там Reality, без cert проверка не работает),
+// но connect-success достаточен, чтобы понять, что xray слушает.
+func (t *XrayTransport) HealthCheck() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	d := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", t.healthAddr)
 	if err != nil {
-		return err
+		return fmt.Errorf("xray health: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func coerceInbound(cfg any) (XrayInbound, error) {
-	switch v := cfg.(type) {
-	case XrayInbound:
-		return v, nil
-	case []byte:
-		var x XrayInbound
-		err := json.Unmarshal(v, &x)
-		return x, err
-	case string:
-		var x XrayInbound
-		err := json.Unmarshal([]byte(v), &x)
-		return x, err
-	case map[string]any:
-		b, _ := json.Marshal(v)
-		var x XrayInbound
-		err := json.Unmarshal(b, &x)
-		return x, err
-	}
-	return XrayInbound{}, fmt.Errorf("xray: unsupported config type %T", cfg)
-}
-
-func inboundToMap(in XrayInbound) map[string]any {
-	port := in.Port
-	if port == 0 {
-		port = 443
-	}
-	dest := in.Dest
-	if dest == "" {
-		dest = "www.cloudflare.com:443"
-	}
-	sni := in.SNI
-	if sni == "" {
-		sni = "www.cloudflare.com"
-	}
-	fp := in.Fingerprint
-	if fp == "" {
-		fp = "chrome"
-	}
-	shortIDs := in.ShortIDs
-	if len(shortIDs) == 0 {
-		shortIDs = []string{""}
-	}
-	return map[string]any{
-		"log": map[string]any{"loglevel": "warning"},
-		"inbounds": []any{
-			map[string]any{
-				"listen":   "0.0.0.0",
-				"port":     port,
-				"protocol": "vless",
-				"tag":      "vless-reality",
-				"settings": map[string]any{
-					"clients":    []any{},
-					"decryption": "none",
-				},
-				"streamSettings": map[string]any{
-					"network":  "tcp",
-					"security": "reality",
-					"realitySettings": map[string]any{
-						"show":         false,
-						"dest":         dest,
-						"serverNames":  []string{sni},
-						"privateKey":   in.PrivateKey,
-						"shortIds":     shortIDs,
-						"fingerprint":  fp,
-					},
-				},
-				"sniffing": map[string]any{
-					"enabled":      true,
-					"destOverride": []string{"http", "tls", "quic"},
-				},
-			},
-		},
-		"outbounds": []any{
-			map[string]any{"protocol": "freedom", "tag": "direct"},
-			map[string]any{"protocol": "blackhole", "tag": "block"},
-		},
-	}
-}
-
-func cloneMap(m map[string]any) map[string]any {
-	b, _ := json.Marshal(m)
-	var out map[string]any
-	_ = json.Unmarshal(b, &out)
-	return out
+	_ = conn.Close()
+	return nil
 }

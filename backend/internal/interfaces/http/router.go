@@ -96,6 +96,8 @@ func NewRouter(d Deps) http.Handler {
 				r.Get("/", d.Server.List)
 				r.Delete("/{id}", d.Server.Delete)
 			})
+			// Stateless deploy: пересобрать xray config и запушить агенту.
+			r.Post("/api/v1/admin/servers/{id}/redeploy", d.Peer.Redeploy)
 
 			// invites — управление токенами для client-side keygen.
 			r.Post("/api/v1/admin/invites",       d.Invite.Create)
