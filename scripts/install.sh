@@ -33,7 +33,22 @@ TLS_MODE="${TLS_MODE:-}"
 PANEL_DOMAIN="${PANEL_DOMAIN:-}"
 
 # ----- pretty -----
-GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+# Enable ANSI colors only when writing to a TTY.
+if [ -t 1 ]; then
+    GREEN=$'\033[0;32m'
+    YELLOW=$'\033[1;33m'
+    RED=$'\033[0;31m'
+    CYAN=$'\033[0;36m'
+    BOLD=$'\033[1m'
+    NC=$'\033[0m'
+else
+    GREEN=''
+    YELLOW=''
+    RED=''
+    CYAN=''
+    BOLD=''
+    NC=''
+fi
 
 ts()    { date '+%Y-%m-%d %H:%M:%S'; }
 log()   { printf "${GREEN}[%s] [INFO] %s${NC}\n" "$(ts)" "$*" | tee -a "$LOG_FILE"; }
@@ -295,28 +310,23 @@ choose_tls_mode_interactive() {
         log "TLS_MODE=$TLS_MODE (from env)"
         return
     fi
-    cat <<BANNER
+    printf "\n${BOLD}SSL setup${NC}\n"
+    printf "  ${BOLD}1)${NC} ${GREEN}Domain (Let's Encrypt)${NC}  ${BOLD}[recommended]${NC}\n"
+    printf "     - trusted cert, no browser warnings\n"
+    printf "     - automatic renewal\n"
+    printf "  ${BOLD}2)${NC} ${GREEN}IP address (self-signed)${NC}\n"
+    printf "     - works immediately\n"
+    printf "     - browser warning expected\n\n"
 
-${BOLD}====================================${NC}
-${BOLD}     SSL Certificate Setup${NC}
-${BOLD}====================================${NC}
-  ${BOLD}1)${NC} ${GREEN}Domain${NC} (рекомендуется)
-       - автоматический Let's Encrypt
-       - автообновление
-       - без warning в браузере
-  ${BOLD}2)${NC} ${GREEN}IP Address${NC}
-       - автоматический self-signed
-       - работает сразу
-       - возможен warning в браузере
-${BOLD}------------------------------------${NC}
-BANNER
     local choice
-    ask "Select [1-2] (default: 2)" choice "2"
-    case "$choice" in
-        1) TLS_MODE=letsencrypt ;;
-        2|"") TLS_MODE=selfsigned ;;
-        *) die "Invalid choice: $choice" ;;
-    esac
+    while true; do
+        ask "Select [1-2]" choice "2"
+        case "$choice" in
+            1) TLS_MODE=letsencrypt; return ;;
+            2|"") TLS_MODE=selfsigned; return ;;
+            *) warn "Please enter 1 or 2." ;;
+        esac
+    done
 }
 
 ask_domain_and_validate() {
@@ -527,6 +537,7 @@ start_stack() {
     runq docker compose pull --quiet
     if ! run docker compose up -d --build --remove-orphans; then
         err "docker compose up failed"
+        dump_recent_log 120
         dump_compose_logs 100
         hint "Run manually for live output: cd $INSTALL_DIR && docker compose up --build"
         hint "Если падает на build — проверьте, есть ли свободное место: df -h"
