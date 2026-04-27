@@ -34,7 +34,7 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: "${BOOTSTRAP_ADMIN_EMAIL:-admin@local}"
       BOOTSTRAP_ADMIN_PASSWORD: "${BOOTSTRAP_ADMIN_PASSWORD:?set in .env}"
     volumes:
-      - agent_ca:/var/lib/voidwg/agent-ca
+      - ./runtime/agent-ca:/var/lib/voidwg/agent-ca
     expose:
       - "8080"
 
@@ -134,5 +134,4 @@ services:
 
 volumes:
   pgdata:
-  agent_ca:
   xray_cfg:

@@ -254,7 +254,12 @@ clone_repo() {
         run git clone --depth=1 --branch "$REPO_BRANCH" "$REPO_URL" "$INSTALL_DIR" \
             || die "git clone failed: $REPO_URL ($REPO_BRANCH) — проверьте URL и доступ."
     fi
-    mkdir -p "$INSTALL_DIR/runtime/tls" "$INSTALL_DIR/runtime/acme-www"
+    mkdir -p "$INSTALL_DIR/runtime/tls" "$INSTALL_DIR/runtime/acme-www" "$INSTALL_DIR/runtime/agent-ca"
+    # API runs as non-root user (uid/gid 65532) in container; ensure mTLS dir is writable.
+    if ! chown -R 65532:65532 "$INSTALL_DIR/runtime/agent-ca" 2>/dev/null; then
+        warn "Could not chown runtime/agent-ca to 65532:65532; falling back to chmod 0777"
+        chmod -R 0777 "$INSTALL_DIR/runtime/agent-ca" || true
+    fi
 }
 
 random_pass() {
@@ -571,16 +576,20 @@ start_stack() {
     if [ "$ready" -ne 1 ]; then
         warn "API did not become healthy within 120s — собираю диагностику..."
         dump_compose_logs 100
-        local svc state
+        local svc state bad=0
         for svc in postgres api frontend; do
             state="$(docker compose ps --format '{{.State}}' "$svc" 2>/dev/null | head -n1 || true)"
             if [ "$state" != "running" ]; then
                 err "service $svc is in state: ${state:-unknown}"
+                bad=1
             fi
         done
         hint "Tail logs in foreground: docker compose -f $INSTALL_DIR/docker-compose.yml logs -f"
         hint "Restart only api: docker compose -f $INSTALL_DIR/docker-compose.yml restart api"
         hint "TLS-cert problem? Check: ls -la $INSTALL_DIR/runtime/tls/"
+        if [ "$bad" -ne 0 ]; then
+            die "Stack is not healthy after startup; see logs above."
+        fi
     else
         ok "API is healthy ($probe_url)"
     fi
