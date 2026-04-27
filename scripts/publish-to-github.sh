@@ -8,12 +8,12 @@
 # Перед запуском:
 #   1. Создайте personal access token (classic, scope `repo`)
 #      https://github.com/settings/tokens
-#   2. Создайте пустой репозиторий: https://github.com/new  -> wester11/void_wg
+#   2. Создайте пустой репозиторий: https://github.com/new  -> wester11/v-ui
 #      (без README/license — иначе будет конфликт при первом push)
 set -Eeuo pipefail
 
 GH_USER="${GH_USER:-wester11}"
-GH_REPO="${GH_REPO:-void_wg}"
+GH_REPO="${GH_REPO:-v-ui}"
 GH_BRANCH="${GH_BRANCH:-main}"
 GH_TOKEN="${GH_TOKEN:?Set GH_TOKEN env var (GitHub personal access token, scope: repo)}"
 

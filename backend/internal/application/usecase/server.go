@@ -282,3 +282,35 @@ func ifEmpty(v, def string) string {
 	}
 	return v
 }
+
+// ensureSystemClient — добавляет (или обновляет) служебный VLESS-client в
+// XrayConfig.SystemClients. Идемпотентен по uuid и по email-метке. Используется
+// для cascade-interconnect: upstream-нода должна знать о downstream'е, чтобы
+// VLESS-handshake между нодами проходил.
+func ensureSystemClient(cfg *domain.XrayConfig, vlessUUID, email, flow string) {
+	if cfg == nil {
+		return
+	}
+	vlessUUID = strings.TrimSpace(vlessUUID)
+	email = strings.TrimSpace(email)
+	if vlessUUID == "" {
+		return
+	}
+	if flow == "" {
+		flow = "xtls-rprx-vision"
+	}
+	for i := range cfg.SystemClients {
+		c := &cfg.SystemClients[i]
+		if c.ID == vlessUUID || (email != "" && c.Email == email) {
+			c.ID = vlessUUID
+			c.Email = email
+			c.Flow = flow
+			return
+		}
+	}
+	cfg.SystemClients = append(cfg.SystemClients, domain.XraySystemClient{
+		ID:    vlessUUID,
+		Email: email,
+		Flow:  flow,
+	})
+}
