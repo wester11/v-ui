@@ -137,6 +137,17 @@ func (s *ConfigService) Activate(ctx context.Context, configID uuid.UUID) error 
 	return s.deployActiveConfig(ctx, server)
 }
 
+// Deploy — публичный wrapper для UI-кнопки "Deploy now": берёт активный
+// config сервера, пересобирает full JSON, пушит агенту. Без активации
+// (используется когда оператор хочет переотправить тот же config).
+func (s *ConfigService) Deploy(ctx context.Context, serverID uuid.UUID) error {
+	server, err := s.servers.GetByID(ctx, serverID)
+	if err != nil {
+		return err
+	}
+	return s.deployActiveConfig(ctx, server)
+}
+
 func (s *ConfigService) deployActiveConfig(ctx context.Context, server *domain.Server) error {
 	if server.Protocol != domain.ProtoXray {
 		return nil

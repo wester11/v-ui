@@ -104,3 +104,24 @@ func (h *ConfigHandler) Activate(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// Deploy — POST /api/v1/admin/servers/{id}/deploy
+// Пересобирает active config + пушит агенту. Идемпотентно.
+func (h *ConfigHandler) Deploy(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, domain.ErrValidation)
+		return
+	}
+	if err := h.svc.Deploy(r.Context(), id); err != nil {
+		writeErr(w, err)
+		return
+	}
+	uid := mw.UserIDFromCtx(r.Context())
+	h.audit.Log(r.Context(), domain.AuditEvent{
+		ActorID: ptrUUID(uid), Action: "config.deploy", Result: "ok",
+		TargetType: "server", TargetID: id.String(),
+		IP: mw.ClientIP(r), UserAgent: r.UserAgent(),
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+

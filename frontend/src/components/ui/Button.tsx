@@ -30,7 +30,7 @@ export function Button({
   const cls = [variantClass[variant], size === 'sm' ? 'btn-sm' : '', className].filter(Boolean).join(' ')
   return (
     <button {...rest} disabled={disabled || loading} className={cls}>
-      {loading ? <span className="spin">⟳</span> : icon}
+      {loading ? <span className="spin" /> : icon}
       {children}
     </button>
   )

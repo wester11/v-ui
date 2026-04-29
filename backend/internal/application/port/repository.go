@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -43,6 +44,9 @@ type ServerRepository interface {
 	List(ctx context.Context) ([]*domain.Server, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	CountOnline(ctx context.Context) (total int, online int, err error)
+	// MarkStaleOffline помечает сервера как offline, если их last_heartbeat
+	// старше threshold. Возвращает количество обновлённых строк.
+	MarkStaleOffline(ctx context.Context, threshold time.Duration) (int, error)
 }
 
 type ConfigRepository interface {
@@ -63,6 +67,29 @@ type InviteRepository interface {
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]*domain.Invite, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	DeleteExpired(ctx context.Context) (int, error)
+}
+
+// JobRepository — distributed-task queue.
+type JobRepository interface {
+	Create(ctx context.Context, j *domain.Job) error
+	// LeasePending — атомарно достаёт N задач для server'а, помечает running.
+	// Используется long-poll'ом с агента.
+	LeasePending(ctx context.Context, serverID uuid.UUID, max int) ([]*domain.Job, error)
+	Submit(ctx context.Context, jobID uuid.UUID, status domain.JobStatus, result []byte, errMsg string) error
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.Job, error)
+	ListByServer(ctx context.Context, serverID uuid.UUID, limit int) ([]*domain.Job, error)
+	// RescheduleStale — задачи с status=running >5 минут возвращает в pending
+	// (агент упал между lease и submit). Вызывается фоновым тикером.
+	RescheduleStale(ctx context.Context, threshold time.Duration) (int, error)
+}
+
+// ConfigVersionRepository — снимки конфигов с историей.
+type ConfigVersionRepository interface {
+	Create(ctx context.Context, v *domain.ConfigVersion) error
+	GetByID(ctx context.Context, id uuid.UUID) (*domain.ConfigVersion, error)
+	ListByServer(ctx context.Context, serverID uuid.UUID, limit int) ([]*domain.ConfigVersion, error)
+	NextVersion(ctx context.Context, serverID uuid.UUID) (int, error)
+	MarkStatus(ctx context.Context, id uuid.UUID, status domain.ConfigVersionStatus) error
 }
 
 // AuditRepository — журнал событий.

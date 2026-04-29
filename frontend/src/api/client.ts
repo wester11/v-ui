@@ -104,6 +104,12 @@ export const api = {
       }),
     check: (id: string) => request<NodeCheckResult>(`/api/v1/servers/${id}/check`),
     delete: (id: string) => request<void>(`/api/v1/servers/${id}`, { method: 'DELETE' }),
+    deploy:  (id: string) => request<void>(`/api/v1/admin/servers/${id}/deploy`, { method: 'POST' }),
+    restart: (id: string) => request<void>(`/api/v1/admin/servers/${id}/restart`, { method: 'POST' }),
+    rotateSecret: (id: string) =>
+      request<{ server_id: string; secret: string; warning: string }>(
+        `/api/v1/admin/servers/${id}/rotate-secret`, { method: 'POST' }),
+    metrics: (id: string) => request<unknown>(`/api/v1/admin/servers/${id}/metrics`),
   },
 
   configs: {

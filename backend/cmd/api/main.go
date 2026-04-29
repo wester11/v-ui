@@ -45,6 +45,8 @@ func main() {
 	cfgRepo := persistence.NewConfigRepo(pool)
 	invRepo := persistence.NewInviteRepo(pool)
 	auditRepo := persistence.NewAuditRepo(pool)
+	jobRepo := persistence.NewJobRepo(pool)
+	cvRepo := persistence.NewConfigVersionRepo(pool)
 
 	keys := wg.New()
 	hasher := jwtauth.NewHasher()
@@ -65,6 +67,9 @@ func main() {
 	peerUC := usecase.NewPeerService(peerRepo, srvRepo, agentTransport)
 	cfgUC := usecase.NewConfigService(cfgRepo, srvRepo, peerRepo, agentTransport)
 	srvUC := usecase.NewServerService(srvRepo, keys, mtlsIssuer, cfg.PublicBaseURL)
+	nodeOpsUC := usecase.NewNodeOpsService(srvRepo, agentTransport)
+	jobUC := usecase.NewJobService(jobRepo, srvRepo, cvRepo)
+	_ = jobUC // прокидывается в router через AgentJobs handler ниже
 	inviteUC := usecase.NewInviteService(invRepo, peerUC, srvRepo)
 	statsUC := usecase.NewStatsService(userRepo, peerRepo, srvRepo)
 
@@ -78,7 +83,9 @@ func main() {
 		Config: handler.NewConfig(cfgUC, auditUC),
 		Stats:  handler.NewStats(statsUC),
 		Invite: handler.NewInvite(inviteUC, cfg.PublicBaseURL, auditUC),
-		Audit:  handler.NewAudit(auditUC),
+		Audit:     handler.NewAudit(auditUC),
+		NodeOps:   handler.NewNodeOps(nodeOpsUC, srvUC, auditUC),
+		AgentJobs: handler.NewAgentJobs(jobUC, srvRepo),
 	})
 
 	srv := &http.Server{
@@ -92,6 +99,43 @@ func main() {
 		shutdown, c := context.WithTimeout(context.Background(), 10*time.Second)
 		defer c()
 		_ = srv.Shutdown(shutdown)
+	}()
+
+	// Background: задачи, висящие в running >5 мин, возвращаются в pending.
+	go func() {
+		t := time.NewTicker(60 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if n, err := jobUC.CleanupStale(ctx); err != nil {
+					log.Warn().Err(err).Msg("job-gc failed")
+				} else if n > 0 {
+					log.Info().Int("count", n).Msg("stale jobs rescheduled")
+				}
+			}
+		}
+	}()
+
+	// Background monitor: серверы без heartbeat'а >60s помечаются offline.
+	// Тикер срабатывает каждые 30s.
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if n, err := srvUC.MarkStaleOffline(ctx, 60*time.Second); err != nil {
+					log.Warn().Err(err).Msg("offline-monitor failed")
+				} else if n > 0 {
+					log.Info().Int("count", n).Msg("nodes marked offline (stale heartbeat)")
+				}
+			}
+		}
 	}()
 
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

@@ -193,6 +193,37 @@ func (s *ServerService) Get(ctx context.Context, id uuid.UUID) (*domain.Server, 
 
 func (s *ServerService) Delete(ctx context.Context, id uuid.UUID) error { return s.repo.Delete(ctx, id) }
 
+// MarkStaleOffline — публичный wrapper. Вызывается из background-monitor'а
+// в cmd/api/main.go каждые 30с с threshold=60s.
+func (s *ServerService) MarkStaleOffline(ctx context.Context, threshold time.Duration) (int, error) {
+	return s.repo.MarkStaleOffline(ctx, threshold)
+}
+
+// RotateSecret — генерирует новый node_secret для сервера и сохраняет.
+// После этого старый агент больше не сможет heartbeat'ить — оператору надо
+// вручную обновить /opt/void-node/docker-compose.yml на VPS или переустановить
+// ноду новой install-командой.
+//
+// Возвращает новый secret (одноразово).
+func (s *ServerService) RotateSecret(ctx context.Context, id uuid.UUID) (string, error) {
+	srv, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	newSecret, err := randomHex(24)
+	if err != nil {
+		return "", err
+	}
+	srv.NodeSecret = newSecret
+	srv.Status = "pending"
+	srv.Online = false
+	srv.UpdatedAt = time.Now().UTC()
+	if err := s.repo.Update(ctx, srv); err != nil {
+		return "", err
+	}
+	return newSecret, nil
+}
+
 func (s *ServerService) controlURL(endpoint string) string {
 	if s.publicBaseURL != "" {
 		return s.publicBaseURL

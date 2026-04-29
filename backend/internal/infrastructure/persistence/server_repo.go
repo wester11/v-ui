@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -111,6 +113,30 @@ func (r *ServerRepo) List(ctx context.Context) ([]*domain.Server, error) {
 func (r *ServerRepo) Delete(ctx context.Context, id uuid.UUID) error {
 	_, err := r.db.Exec(ctx, `DELETE FROM servers WHERE id=$1`, id)
 	return err
+}
+
+// MarkStaleOffline помечает все online-сервера, у которых нет heartbeat'а в
+// течение `threshold`, как offline. Single-statement UPDATE — атомарно.
+//
+// Возвращает количество переключённых строк (0 если все живы).
+func (r *ServerRepo) MarkStaleOffline(ctx context.Context, threshold time.Duration) (int, error) {
+	if threshold <= 0 {
+		return 0, fmt.Errorf("threshold must be positive")
+	}
+	tag, err := r.db.Exec(ctx, `
+		UPDATE servers
+		   SET online = FALSE,
+		       status = 'offline',
+		       updated_at = NOW()
+		 WHERE online = TRUE
+		   AND (last_heartbeat IS NULL OR last_heartbeat < NOW() - $1::interval)`,
+		// pgx умеет принимать time.Duration как interval через строку
+		fmt.Sprintf("%d milliseconds", threshold.Milliseconds()),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func (r *ServerRepo) CountOnline(ctx context.Context) (int, int, error) {

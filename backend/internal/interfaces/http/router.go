@@ -26,7 +26,9 @@ type Deps struct {
 	Config *handler.ConfigHandler
 	Stats  *handler.StatsHandler
 	Invite *handler.InviteHandler
-	Audit  *handler.AuditHandler
+	Audit     *handler.AuditHandler
+	NodeOps   *handler.NodeOpsHandler
+	AgentJobs *handler.AgentJobsHandler
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -66,6 +68,10 @@ func NewRouter(d Deps) http.Handler {
 
 	r.Post("/api/v1/agent/register", d.Server.RegisterAgent)
 	r.Post("/api/v1/agent/heartbeat", d.Server.Heartbeat)
+
+	// Phase 8: pull-mode job queue для агентов (auth: X-Node-ID + X-Node-Secret).
+	r.Get("/api/v1/agent/jobs",       d.AgentJobs.Pull)
+	r.Post("/api/v1/agent/jobs/{id}", d.AgentJobs.Submit)
 	r.Get("/install-node.sh", d.Server.InstallNodeScript)
 
 	r.Group(func(r chi.Router) {
@@ -108,6 +114,12 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/api/v1/admin/servers/{id}/redeploy", d.Peer.Redeploy)
 			r.Post("/api/v1/admin/servers/redeploy-all", d.Peer.RedeployAll)
 			r.Get("/api/v1/admin/servers/health", d.Peer.Health)
+
+			// Phase 7: config deploy + node remote-control.
+			r.Post("/api/v1/admin/servers/{id}/deploy",        d.Config.Deploy)
+			r.Post("/api/v1/admin/servers/{id}/restart",       d.NodeOps.Restart)
+			r.Post("/api/v1/admin/servers/{id}/rotate-secret", d.NodeOps.RotateSecret)
+			r.Get("/api/v1/admin/servers/{id}/metrics",        d.NodeOps.Metrics)
 
 			r.Post("/api/v1/admin/invites", d.Invite.Create)
 			r.Get("/api/v1/admin/invites", d.Invite.List)

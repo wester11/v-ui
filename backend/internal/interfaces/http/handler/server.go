@@ -167,6 +167,15 @@ func (h *ServerHandler) Check(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// InstallNodeScript отдаёт скрипт установки агента на новый VPS.
+//
+// Скрипт:
+//   1) ставит docker
+//   2) git-clone'ит репозиторий (REPO_URL env override, default из install-time)
+//   3) docker build -t void/node:latest agent/
+//   4) docker compose up -d с CONTROL_URL/NODE_ID/SECRET переданными как ENV
+//
+// Идемпотентен: повторный run пересобирает образ.
 func (h *ServerHandler) InstallNodeScript(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -174,60 +183,42 @@ func (h *ServerHandler) InstallNodeScript(w http.ResponseWriter, _ *http.Request
 }
 
 const nodeInstallScript = `#!/usr/bin/env bash
+# void-wg node installer.
+#
+# Запускается с --control-url=<url> --node-id=<uuid> --secret=<hex>.
+# Этот скрипт ОТДАЁТСЯ control-plane'ом по адресу /install-node.sh
+# и встроен в backend как const nodeInstallScript.
+#
+# Логика:
+#   1) проверка root + установка docker / docker compose
+#   2) скачивание исходников агента из <CONTROL_URL>/static/agent.tar.gz
+#      (control-plane отдаёт публично; альтернатива — клонировать репозиторий)
+#   3) локальный docker build → image void/node:latest
+#   4) генерация /opt/void-node/docker-compose.yml
+#   5) docker compose up -d
+#
+# Идемпотентен: повторный запуск пересобирает образ с актуальным кодом.
 set -Eeuo pipefail
 
 CONTROL_URL=""
 NODE_ID=""
 SECRET=""
 NODE_VERSION="${NODE_VERSION:-latest}"
+NODE_INSTALL_DIR="${NODE_INSTALL_DIR:-/opt/void-node}"
+# REPO_URL — откуда тянуть исходники. По умолчанию резолвим из control-plane'а
+# (репозиторий должен совпадать с тем, откуда установлена сама панель).
+REPO_URL="${REPO_URL:-https://github.com/wester11/v-ui.git}"
+REPO_BRANCH="${REPO_BRANCH:-main}"
 
 for arg in "$@"; do
   case "$arg" in
     --control-url=*) CONTROL_URL="${arg#*=}" ;;
-    --node-id=*) NODE_ID="${arg#*=}" ;;
-    --secret=*) SECRET="${arg#*=}" ;;
+    --node-id=*)     NODE_ID="${arg#*=}" ;;
+    --secret=*)      SECRET="${arg#*=}" ;;
+    --repo=*)        REPO_URL="${arg#*=}" ;;
+    --branch=*)      REPO_BRANCH="${arg#*=}" ;;
   esac
 done
 
-if [ "$(id -u)" -ne 0 ]; then
-  echo "run as root" >&2
-  exit 1
-fi
-
-[ -n "$CONTROL_URL" ] || { echo "--control-url is required" >&2; exit 1; }
-[ -n "$NODE_ID" ] || { echo "--node-id is required" >&2; exit 1; }
-[ -n "$SECRET" ] || { echo "--secret is required" >&2; exit 1; }
-
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl gnupg lsb-release
-
-if ! command -v docker >/dev/null 2>&1; then
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL "https://download.docker.com/linux/$(. /etc/os-release; echo "$ID")/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  chmod a+r /etc/apt/keyrings/docker.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$(. /etc/os-release; echo "$ID") $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
-  apt-get update -qq
-  apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  systemctl enable --now docker
-fi
-
-mkdir -p /opt/void-node
-cat >/opt/void-node/docker-compose.yml <<EOF
-services:
-  void-node:
-    image: void/node:${NODE_VERSION}
-    network_mode: host
-    restart: always
-    environment:
-      - CONTROL_URL=${CONTROL_URL}
-      - NODE_ID=${NODE_ID}
-      - SECRET=${SECRET}
-      - HTTP_LISTEN=:7443
-EOF
-
-cd /opt/void-node
-docker compose pull || true
-docker compose up -d --remove-orphans
-echo "node agent started"
-`
+# Pretty-печать
+G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; N`

@@ -71,6 +71,46 @@ func (a *AgentClient) Health(ctx context.Context, srv *domain.Server) error {
 	return a.do(ctx, srv, http.MethodGet, "/healthz", "", nil)
 }
 
+// RestartService — POST /v1/restart на агенте. Для xray вызывает docker restart
+// xray-контейнера, для WG/AWG — soft-reload интерфейса.
+func (a *AgentClient) RestartService(ctx context.Context, srv *domain.Server) error {
+	return a.do(ctx, srv, http.MethodPost, "/v1/restart", "application/json", []byte("{}"))
+}
+
+// Metrics — GET /v1/metrics на агенте. Возвращает сырой JSON (struct
+// определяется агентом). UI / Prometheus-bridge парсят на своей стороне.
+func (a *AgentClient) Metrics(ctx context.Context, srv *domain.Server) ([]byte, error) {
+	url := fmt.Sprintf("https://%s/v1/metrics", srv.Endpoint)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Agent-Token", srv.AgentToken)
+	resp, err := a.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("agent %s metrics: status %d", srv.Name, resp.StatusCode)
+	}
+	body := make([]byte, 0, 4096)
+	buf := make([]byte, 4096)
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			body = append(body, buf[:n]...)
+		}
+		if err != nil {
+			break
+		}
+		if len(body) > 1<<20 { // 1 MiB cap
+			break
+		}
+	}
+	return body, nil
+}
+
 func (a *AgentClient) do(ctx context.Context, srv *domain.Server, method, path, contentType string, body []byte) error {
 	url := fmt.Sprintf("https://%s%s", srv.Endpoint, path)
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))

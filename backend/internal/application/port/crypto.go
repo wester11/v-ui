@@ -48,6 +48,10 @@ type AgentTransport interface {
 	RevokePeer(ctx context.Context, server *domain.Server, peerID uuid.UUID) error
 	DeployConfig(ctx context.Context, server *domain.Server, configJSON []byte) error
 	Health(ctx context.Context, server *domain.Server) error
+
+	// Phase 7: remote node control.
+	RestartService(ctx context.Context, server *domain.Server) error
+	Metrics(ctx context.Context, server *domain.Server) ([]byte, error)
 }
 
 // MTLSIssuer — выпуск client-сертификатов для агентов под общий CA.

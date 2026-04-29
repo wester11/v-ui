@@ -179,6 +179,50 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
+	// /v1/restart — control-plane просит ребутнуть рантайм. Для xray-режима
+	// делегируется в XrayTransport.Restart() (docker restart sidecar). Для WG/AWG
+	// перезапуск интерфейса делается через wg-quick down/up — пока no-op.
+	mux.HandleFunc("/v1/restart", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Agent-Token") != cfg.AgentToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if xt, ok := trans.(*transport.XrayTransport); ok {
+			if err := xt.Restart(); err != nil {
+				log.Error().Err(err).Msg("xray restart")
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	// /v1/metrics — агент-side runtime metrics для UI-страницы Server detail.
+	// Сейчас отдаёт минимальный JSON; в будущем — RX/TX, peers online, версии.
+	mux.HandleFunc("/v1/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Agent-Token") != cfg.AgentToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		host, _ := os.Hostname()
+		out := map[string]any{
+			"transport":     trans.Name(),
+			"hostname":      host,
+			"agent_version": envOr("AGENT_VERSION", "dev"),
+			"protocol":      cfg.Protocol,
+			"timestamp":     time.Now().UTC().Format(time.RFC3339),
+		}
+		if xt, ok := trans.(*transport.XrayTransport); ok {
+			out["xray_health"] = xt.HealthCheck() == nil
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	})
+
 	// /v1/xray/health — простой TCP-probe inbound-порта.
 	mux.HandleFunc("/v1/xray/health", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Agent-Token") != cfg.AgentToken {
