@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, ApiError } from '../api/client'
+import { useI18n } from '../i18n'
 import type { Config, CreateConfigRequest, Server } from '../types'
 import { Badge, Button, Empty, Input, Modal, Skeleton, toast } from '../components/ui'
 import { formatRelative } from '../lib/format'
@@ -48,7 +49,17 @@ const empty: FormState = {
   rule_non_ru_proxy: true,
 }
 
+function SectionHeader({ title, sub }: { title: string; sub?: string }) {
+  return (
+    <div style={{ borderBottom: '1px solid var(--border)', paddingBottom: 8, marginBottom: 4 }}>
+      <div className="text-sm" style={{ fontWeight: 600, color: 'var(--text)' }}>{title}</div>
+      {sub && <div className="text-xs text-mute" style={{ marginTop: 2 }}>{sub}</div>}
+    </div>
+  )
+}
+
 export default function Configs() {
+  const { t } = useI18n()
   const [servers, setServers] = useState<Server[] | null>(null)
   const [configs, setConfigs] = useState<Config[] | null>(null)
   const [creating, setCreating] = useState(false)
@@ -78,10 +89,7 @@ export default function Configs() {
   }
 
   async function loadConfigs(serverID: string) {
-    if (!serverID) {
-      setConfigs([])
-      return
-    }
+    if (!serverID) { setConfigs([]); return }
     try {
       setConfigs(null)
       setConfigs(await api.configs.listByServer(serverID))
@@ -97,6 +105,7 @@ export default function Configs() {
   const openCreate = () => {
     const first = servers?.[0]?.id ?? ''
     setForm({ ...empty, server_id: first, cascade_upstream_id: first })
+    setErr(null)
     setCreating(true)
   }
 
@@ -132,9 +141,8 @@ export default function Configs() {
         if (form.rule_non_ru_proxy) rules.push({ match: 'geoip:!ru', outbound: 'proxy' })
         body.cascade_rules = rules
       }
-
       await api.configs.create(body)
-      toast.success('Config saved')
+      toast.success(t('toast_config_saved'))
       setCreating(false)
       if (serverFilter) await loadConfigs(serverFilter)
       await loadServers()
@@ -148,11 +156,11 @@ export default function Configs() {
   const activate = async (id: string) => {
     try {
       await api.configs.activate(id)
-      toast.success('Config activated and deployed')
+      toast.success(t('toast_config_activated'))
       if (serverFilter) await loadConfigs(serverFilter)
       await loadServers()
     } catch (e) {
-      toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'activate failed')
+      toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : t('toast_activate_fail'))
     }
   }
 
@@ -160,8 +168,8 @@ export default function Configs() {
     <div className="page">
       <div className="page-header">
         <div>
-          <div className="page-title">Configs</div>
-          <div className="page-sub">Create VPN logic separately from infrastructure servers.</div>
+          <div className="page-title">{t('configs_title')}</div>
+          <div className="page-sub">{t('configs_sub')}</div>
         </div>
         <div className="row" style={{ flexWrap: 'wrap' }}>
           <select
@@ -172,24 +180,26 @@ export default function Configs() {
           >
             {(servers ?? []).map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name} ({s.status})
+                {s.name} ({t('status_' + (s.status ?? 'offline'), s.status ?? 'offline')})
               </option>
             ))}
           </select>
-          <Button variant="primary" onClick={openCreate}>+ Create config</Button>
+          <Button variant="primary" onClick={openCreate}>{t('configs_create')}</Button>
         </div>
       </div>
 
       {!currentServer ? (
         <div className="card">
-          <Empty title="No servers found" sub="Create server first in Servers page." />
+          <Empty title={t('configs_no_servers')} sub={t('configs_no_servers_sub')} />
         </div>
       ) : (
         <div className="card">
           <div className="card-header">
             <div>
               <div className="card-title">{currentServer.name}</div>
-              <div className="card-sub">Active protocol: {currentServer.protocol || 'none'}</div>
+              <div className="card-sub">
+                {t('configs_protocol_label')}: <strong>{currentServer.protocol || 'none'}</strong>
+              </div>
             </div>
           </div>
 
@@ -198,19 +208,19 @@ export default function Configs() {
               {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} height={38} />)}
             </div>
           ) : configs.length === 0 ? (
-            <Empty title="No configs on this server" sub="Create your first Xray config to enable clients." />
+            <Empty title={t('configs_no_configs')} sub={t('configs_no_configs_sub')} />
           ) : (
             <div className="table-wrap">
               <table className="table">
                 <thead>
                   <tr>
-                    <th>Name</th>
-                    <th>Template</th>
-                    <th>Mode</th>
-                    <th>Routing</th>
-                    <th>Status</th>
-                    <th>Updated</th>
-                    <th className="actions">Actions</th>
+                    <th>{t('configs_col_name')}</th>
+                    <th>{t('configs_col_tpl')}</th>
+                    <th>{t('configs_col_mode')}</th>
+                    <th>{t('configs_col_routing')}</th>
+                    <th>{t('configs_col_status')}</th>
+                    <th>{t('configs_col_updated')}</th>
+                    <th className="actions">{t('configs_col_actions')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -220,10 +230,19 @@ export default function Configs() {
                       <td><Badge>{cfg.template}</Badge></td>
                       <td>{cfg.setup_mode}</td>
                       <td>{cfg.routing_mode}</td>
-                      <td>{cfg.is_active ? <Badge tone="success">active</Badge> : <Badge tone="warn">inactive</Badge>}</td>
+                      <td>
+                        {cfg.is_active
+                          ? <Badge tone="success">{t('configs_status_active')}</Badge>
+                          : <Badge tone="warn">{t('configs_status_inactive')}</Badge>
+                        }
+                      </td>
                       <td className="text-dim">{formatRelative(cfg.updated_at)}</td>
                       <td className="actions">
-                        {!cfg.is_active && <Button size="sm" onClick={() => activate(cfg.id)}>Activate</Button>}
+                        {!cfg.is_active && (
+                          <Button size="sm" onClick={() => activate(cfg.id)}>
+                            {t('configs_activate')}
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -236,173 +255,221 @@ export default function Configs() {
 
       <Modal
         open={creating}
-        onClose={() => setCreating(false)}
-        title="Create Xray config"
+        onClose={() => { setCreating(false); setErr(null) }}
+        title={t('configs_modal_title')}
+        width={560}
         footer={(
           <>
-            <Button variant="ghost" onClick={() => setCreating(false)}>Cancel</Button>
-            <Button variant="primary" onClick={submit as never} loading={busy}>Save config</Button>
+            <Button variant="ghost" onClick={() => { setCreating(false); setErr(null) }}>
+              {t('action_cancel')}
+            </Button>
+            <Button variant="primary" onClick={submit as never} loading={busy}>
+              {t('configs_save')}
+            </Button>
           </>
         )}
       >
-        <form className="stack" onSubmit={submit}>
-          <Input
-            label="Name"
-            placeholder="RU gateway profile"
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            required
-          />
-          <div className="row">
-            <div className="stack-sm" style={{ flex: 1 }}>
-              <label className="label">Server</label>
-              <select
-                className="select"
-                value={form.server_id}
-                onChange={(e) => setForm({ ...form, server_id: e.target.value })}
-              >
-                {(servers ?? []).map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
-                ))}
-              </select>
+        <form className="stack" onSubmit={submit} style={{ gap: 16 }}>
+
+          {/* Basic info */}
+          <div className="stack" style={{ gap: 10 }}>
+            <Input
+              label={t('configs_field_name')}
+              placeholder={t('configs_field_name_ph')}
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              required
+              autoFocus
+            />
+
+            <div className="row" style={{ gap: 12 }}>
+              <div className="stack-sm" style={{ flex: 1 }}>
+                <label className="label">{t('configs_field_server')}</label>
+                <select
+                  className="select"
+                  value={form.server_id}
+                  onChange={(e) => setForm({ ...form, server_id: e.target.value })}
+                >
+                  {(servers ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="stack-sm" style={{ flex: 1 }}>
+                <label className="label">{t('configs_field_template')}</label>
+                <select
+                  className="select"
+                  value={form.template}
+                  onChange={(e) => {
+                    const template = e.target.value as Template
+                    setForm({
+                      ...form,
+                      template,
+                      routing_mode: template === 'cascade' ? 'cascade' : form.routing_mode,
+                    })
+                  }}
+                >
+                  <option value="vless_reality">{t('configs_tpl_vless')}</option>
+                  <option value="grpc_reality">{t('configs_tpl_grpc')}</option>
+                  <option value="cascade">{t('configs_tpl_cascade')}</option>
+                  <option value="empty">{t('configs_tpl_empty')}</option>
+                </select>
+              </div>
             </div>
-            <div className="stack-sm" style={{ flex: 1 }}>
-              <label className="label">Template</label>
-              <select
-                className="select"
-                value={form.template}
-                onChange={(e) => {
-                  const template = e.target.value as Template
-                  setForm({
-                    ...form,
-                    template,
-                    routing_mode: template === 'cascade' ? 'cascade' : form.routing_mode,
-                  })
-                }}
-              >
-                <option value="vless_reality">VLESS Reality (default)</option>
-                <option value="grpc_reality">gRPC Reality</option>
-                <option value="cascade">Cascade config</option>
-                <option value="empty">Empty config</option>
-              </select>
+
+            <div className="row" style={{ gap: 12 }}>
+              <div className="stack-sm" style={{ flex: 1 }}>
+                <label className="label">{t('configs_field_mode')}</label>
+                <select
+                  className="select"
+                  value={form.setup_mode}
+                  onChange={(e) => setForm({ ...form, setup_mode: e.target.value as SetupMode })}
+                >
+                  <option value="simple">{t('configs_mode_simple')}</option>
+                  <option value="advanced">{t('configs_mode_advanced')}</option>
+                </select>
+              </div>
+              <div className="stack-sm" style={{ flex: 1 }}>
+                <label className="label">{t('configs_field_routing')}</label>
+                <select
+                  className="select"
+                  value={form.routing_mode}
+                  onChange={(e) => setForm({ ...form, routing_mode: e.target.value as RoutingMode })}
+                >
+                  <option value="simple">{t('configs_routing_simple')}</option>
+                  <option value="advanced">{t('configs_routing_advanced')}</option>
+                  <option value="cascade">{t('configs_routing_cascade')}</option>
+                </select>
+              </div>
             </div>
           </div>
 
-          <div className="row">
-            <div className="stack-sm" style={{ flex: 1 }}>
-              <label className="label">Mode</label>
-              <select
-                className="select"
-                value={form.setup_mode}
-                onChange={(e) => setForm({ ...form, setup_mode: e.target.value as SetupMode })}
-              >
-                <option value="simple">Simple</option>
-                <option value="advanced">Advanced (raw JSON)</option>
-              </select>
-            </div>
-            <div className="stack-sm" style={{ flex: 1 }}>
-              <label className="label">Routing mode</label>
-              <select
-                className="select"
-                value={form.routing_mode}
-                onChange={(e) => setForm({ ...form, routing_mode: e.target.value as RoutingMode })}
-              >
-                <option value="simple">Simple</option>
-                <option value="advanced">Advanced</option>
-                <option value="cascade">Cascade</option>
-              </select>
-            </div>
-          </div>
-
+          {/* Inbound settings */}
           {form.setup_mode === 'simple' ? (
-            <>
-              <div className="row">
+            <div className="stack" style={{ gap: 10 }}>
+              <SectionHeader title={t('configs_section_inbound')} />
+              <div className="row" style={{ gap: 12 }}>
                 <Input
-                  label="Port"
+                  label={t('configs_field_port')}
                   type="number"
                   value={form.inbound_port}
                   onChange={(e) => setForm({ ...form, inbound_port: Number(e.target.value || 443) })}
+                  style={{ width: 100 }}
                 />
                 <Input
-                  label="Short IDs count"
+                  label={t('configs_field_shortids')}
                   type="number"
                   value={form.short_ids_count}
                   onChange={(e) => setForm({ ...form, short_ids_count: Number(e.target.value || 3) })}
+                  style={{ width: 80 }}
                 />
               </div>
-              <Input label="SNI" value={form.sni} onChange={(e) => setForm({ ...form, sni: e.target.value })} />
-              <Input label="Dest" value={form.dest} onChange={(e) => setForm({ ...form, dest: e.target.value })} />
-              <div className="row">
-                <Input label="Fingerprint" value={form.fingerprint} onChange={(e) => setForm({ ...form, fingerprint: e.target.value })} />
-                <Input label="Flow" value={form.flow} onChange={(e) => setForm({ ...form, flow: e.target.value })} />
+              <div className="row" style={{ gap: 12 }}>
+                <Input
+                  label={t('configs_field_sni')}
+                  value={form.sni}
+                  onChange={(e) => setForm({ ...form, sni: e.target.value })}
+                  style={{ flex: 1 }}
+                />
+                <Input
+                  label={t('configs_field_dest')}
+                  value={form.dest}
+                  onChange={(e) => setForm({ ...form, dest: e.target.value })}
+                  style={{ flex: 1 }}
+                />
               </div>
-            </>
+              <div className="row" style={{ gap: 12 }}>
+                <Input
+                  label={t('configs_field_fingerprint')}
+                  value={form.fingerprint}
+                  onChange={(e) => setForm({ ...form, fingerprint: e.target.value })}
+                  style={{ flex: 1 }}
+                />
+                <Input
+                  label={t('configs_field_flow')}
+                  value={form.flow}
+                  onChange={(e) => setForm({ ...form, flow: e.target.value })}
+                  style={{ flex: 1 }}
+                />
+              </div>
+            </div>
           ) : (
-            <div className="stack-sm">
-              <label className="label">Raw Xray JSON</label>
+            <div className="stack" style={{ gap: 10 }}>
+              <SectionHeader title={t('configs_field_raw')} />
               <textarea
                 className="textarea"
                 rows={12}
+                spellCheck={false}
                 value={form.raw_json}
                 onChange={(e) => setForm({ ...form, raw_json: e.target.value })}
+                style={{ fontFamily: 'var(--font-mono)', fontSize: 12, resize: 'vertical' }}
               />
             </div>
           )}
 
+          {/* Cascade settings */}
           {form.routing_mode === 'cascade' && (
-            <div className="state-panel">
-              <div className="row">
-                <div className="stack-sm" style={{ flex: 1 }}>
-                  <label className="label">Upstream server</label>
-                  <select
-                    className="select"
-                    value={form.cascade_upstream_id}
-                    onChange={(e) => setForm({ ...form, cascade_upstream_id: e.target.value })}
-                  >
-                    <option value="">Select upstream...</option>
-                    {xrayServers.filter((s) => s.id !== form.server_id).map((s) => (
-                      <option key={s.id} value={s.id}>{s.name}</option>
-                    ))}
-                  </select>
+            <div className="stack" style={{ gap: 10 }}>
+              <SectionHeader title={t('configs_section_cascade')} />
+              <div className="state-panel" style={{ gap: 10 }}>
+                <div className="row" style={{ gap: 12 }}>
+                  <div className="stack-sm" style={{ flex: 1 }}>
+                    <label className="label">{t('configs_cascade_upstream')}</label>
+                    <select
+                      className="select"
+                      value={form.cascade_upstream_id}
+                      onChange={(e) => setForm({ ...form, cascade_upstream_id: e.target.value })}
+                    >
+                      <option value="">{t('configs_cascade_upstream_ph')}</option>
+                      {xrayServers.filter((s) => s.id !== form.server_id).map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="stack-sm" style={{ width: 160 }}>
+                    <label className="label">{t('configs_cascade_strategy')}</label>
+                    <select
+                      className="select"
+                      value={form.cascade_strategy}
+                      onChange={(e) => setForm({ ...form, cascade_strategy: e.target.value as 'leastPing' | 'random' })}
+                    >
+                      <option value="leastPing">leastPing</option>
+                      <option value="random">random</option>
+                    </select>
+                  </div>
                 </div>
-                <div className="stack-sm" style={{ width: 180 }}>
-                  <label className="label">Strategy</label>
-                  <select
-                    className="select"
-                    value={form.cascade_strategy}
-                    onChange={(e) => setForm({ ...form, cascade_strategy: e.target.value as 'leastPing' | 'random' })}
-                  >
-                    <option value="leastPing">leastPing</option>
-                    <option value="random">random</option>
-                  </select>
+
+                <div className="stack-sm" style={{ gap: 6 }}>
+                  <label className="row gap-2" style={{ cursor: 'pointer', alignItems: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={form.rule_ru_direct}
+                      onChange={(e) => setForm({ ...form, rule_ru_direct: e.target.checked })}
+                    />
+                    <span className="text-sm">{t('configs_rule_ru_direct')}</span>
+                  </label>
+                  <label className="row gap-2" style={{ cursor: 'pointer', alignItems: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={form.rule_non_ru_proxy}
+                      onChange={(e) => setForm({ ...form, rule_non_ru_proxy: e.target.checked })}
+                    />
+                    <span className="text-sm">{t('configs_rule_non_ru_proxy')}</span>
+                  </label>
                 </div>
               </div>
-              <label className="row gap-2" style={{ cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={form.rule_ru_direct}
-                  onChange={(e) => setForm({ ...form, rule_ru_direct: e.target.checked })}
-                />
-                <span>geoip:ru - direct</span>
-              </label>
-              <label className="row gap-2" style={{ cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={form.rule_non_ru_proxy}
-                  onChange={(e) => setForm({ ...form, rule_non_ru_proxy: e.target.checked })}
-                />
-                <span>geoip:!ru - proxy</span>
-              </label>
             </div>
           )}
 
-          <label className="row gap-2" style={{ cursor: 'pointer' }}>
+          {/* Activate toggle */}
+          <label className="row gap-2" style={{ cursor: 'pointer', alignItems: 'center', paddingTop: 4 }}>
             <input
               type="checkbox"
               checked={form.activate}
               onChange={(e) => setForm({ ...form, activate: e.target.checked })}
             />
-            <span>Activate immediately (auto-deploy)</span>
+            <span className="text-sm">{t('configs_activate_now')}</span>
           </label>
 
           {err && <div className="text-danger text-sm">{err}</div>}
@@ -411,4 +478,3 @@ export default function Configs() {
     </div>
   )
 }
-

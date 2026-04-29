@@ -24,7 +24,7 @@ export function Modal({ open, onClose, title, children, footer, width }: ModalPr
 
   if (!open) return null
   return createPortal(
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop">
       <div
         className="modal"
         style={width ? { width } : undefined}
