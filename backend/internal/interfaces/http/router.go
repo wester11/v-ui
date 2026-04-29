@@ -29,6 +29,7 @@ type Deps struct {
 	Audit     *handler.AuditHandler
 	NodeOps   *handler.NodeOpsHandler
 	AgentJobs *handler.AgentJobsHandler
+	System   *handler.SystemHandler
 }
 
 func NewRouter(d Deps) http.Handler {
@@ -84,6 +85,7 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/", d.Peer.Create)
 			r.Get("/{id}/config", d.Peer.Config)
 			r.Delete("/{id}", d.Peer.Delete)
+			r.Patch("/{id}", d.Peer.Patch)
 		})
 
 		r.Group(func(r chi.Router) {
@@ -94,6 +96,7 @@ func NewRouter(d Deps) http.Handler {
 				r.Post("/", d.User.Create)
 				r.Get("/", d.User.List)
 				r.Delete("/{id}", d.User.Delete)
+				r.Patch("/{id}", d.User.Patch)
 			})
 
 			r.Route("/api/v1/servers", func(r chi.Router) {
@@ -124,6 +127,8 @@ func NewRouter(d Deps) http.Handler {
 			r.Post("/api/v1/admin/invites", d.Invite.Create)
 			r.Get("/api/v1/admin/invites", d.Invite.List)
 			r.Delete("/api/v1/admin/invites/{id}", d.Invite.Delete)
+			r.Get("/api/v1/admin/system/version", d.System.Version)
+			r.Post("/api/v1/admin/system/update",  d.System.Update)
 		})
 
 		r.Group(func(r chi.Router) {

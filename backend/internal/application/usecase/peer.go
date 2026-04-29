@@ -312,3 +312,16 @@ func pickShortID(pool []string, key string) string {
 	}
 	return pool[int(h)%len(pool)]
 }
+
+// SetEnabled — включить/выключить пир.
+func (s *PeerService) SetEnabled(ctx context.Context, peerID uuid.UUID, enabled bool) (*domain.Peer, error) {
+	p, err := s.peers.GetByID(ctx, peerID)
+	if err != nil {
+		return nil, err
+	}
+	p.Enabled = enabled
+	if err := s.peers.Update(ctx, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}

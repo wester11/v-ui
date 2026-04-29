@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
 import { useI18n } from '../i18n'
@@ -94,6 +94,17 @@ function ServerListCard({
   )
 }
 
+// Pulsing dot animation for active polling
+function PollDot() {
+  return (
+    <span style={{
+      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+      background: 'var(--accent)', marginRight: 6,
+      animation: 'pulse-dot 1.2s ease-in-out infinite',
+    }} />
+  )
+}
+
 export default function Servers() {
   const { t } = useI18n()
   const [list,         setList]         = useState<Server[] | null>(null)
@@ -107,6 +118,18 @@ export default function Servers() {
   const [checkLoading, setCheckLoading] = useState(false)
   const [confirm,      setConfirm]      = useState<Server | null>(null)
   const [delBusy,      setDelBusy]      = useState(false)
+  const [polling,      setPolling]      = useState(false)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const filtered = useMemo(() => {
+    if (!list) return null
+    const q = search.toLowerCase()
+    if (!q) return list
+    return list.filter((s) =>
+      s.name.toLowerCase().includes(q) ||
+      (s.ip || s.endpoint || '').toLowerCase().includes(q)
+    )
+  }, [list, search])
 
   async function reload() {
     try {
@@ -118,21 +141,52 @@ export default function Servers() {
 
   useEffect(() => { reload() }, [])
 
-  const filtered = useMemo(() => {
-    if (!list) return null
-    const q = search.trim().toLowerCase()
-    if (!q) return list
-    return list.filter((s) =>
-      s.name.toLowerCase().includes(q) ||
-      s.endpoint.toLowerCase().includes(q) ||
-      (s.ip ?? '').toLowerCase().includes(q),
-    )
-  }, [list, search])
+  // Auto-poll every 5s while onboarding modal is open
+  useEffect(() => {
+    if (!onboarding) {
+      stopPolling()
+      return
+    }
+    startPolling(onboarding.id)
+    return () => stopPolling()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onboarding?.id])
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault()
-    setErr(null)
+  function startPolling(serverID: string) {
+    stopPolling()
+    setPolling(true)
+    pollRef.current = setInterval(() => {
+      silentCheck(serverID)
+    }, 5000)
+  }
+
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+    setPolling(false)
+  }
+
+  async function silentCheck(serverID: string) {
+    try {
+      const res = await api.servers.check(serverID)
+      setCheckResult(res)
+      if (res.status === 'online') {
+        stopPolling()
+        await reload()
+        toast.success(t('servers_onboard_connected'))
+      }
+    } catch {
+      // silently ignore errors during background polling
+    }
+  }
+
+  async function submit(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!form.name.trim() || !form.endpoint.trim()) return
     setBusy(true)
+    setErr(null)
     try {
       const resp = await api.servers.create({
         name:     form.name.trim(),
@@ -156,8 +210,12 @@ export default function Servers() {
     try {
       const res = await api.servers.check(serverID)
       setCheckResult(res)
-      if (res.status === 'online') toast.success(t('status_online'))
-      else toast.warn(t('status_offline'))
+      if (res.status === 'online') {
+        stopPolling()
+        toast.success(t('status_online'))
+      } else {
+        toast.warn(t('status_offline'))
+      }
       await reload()
     } catch (e) {
       toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'check failed')
@@ -180,6 +238,8 @@ export default function Servers() {
       setDelBusy(false)
     }
   }
+
+  const isOnline = checkResult?.status === 'online'
 
   return (
     <div className="page">
@@ -274,43 +334,83 @@ export default function Servers() {
       {onboarding && (
         <Modal
           open
-          onClose={() => setOnboarding(null)}
+          onClose={() => { setOnboarding(null); stopPolling() }}
           title={`${t('servers_onboard_title')}: ${onboarding.name}`}
+          width={560}
           footer={(
             <>
-              <Button onClick={() => checkConnection(onboarding.id)} loading={checkLoading}>
-                {t('action_check')}
-              </Button>
-              <Button variant="primary" onClick={() => setOnboarding(null)}>
-                {t('action_cancel')}
-              </Button>
+              {!isOnline && (
+                <Button onClick={() => checkConnection(onboarding.id)} loading={checkLoading}>
+                  {t('action_check')}
+                </Button>
+              )}
+              {isOnline ? (
+                <Button variant="primary" onClick={() => { setOnboarding(null); stopPolling() }}>
+                  {t('servers_onboard_done')}
+                </Button>
+              ) : (
+                <Button variant="ghost" onClick={() => { setOnboarding(null); stopPolling() }}>
+                  {t('action_cancel')}
+                </Button>
+              )}
             </>
           )}
         >
           <div className="stack">
             <div className="state-panel">
+              {/* Step 1 */}
               <div className="stack-sm">
-                <div><strong>{t('servers_onboard_step1')}</strong></div>
+                <div className="row gap-2">
+                  <span className="onboard-step-num">1</span>
+                  <strong>{t('servers_onboard_step1')}</strong>
+                </div>
                 <CopyField value={onboarding.install_command} />
               </div>
+
+              {/* Step 2 */}
               <div className="stack-sm">
-                <div><strong>{t('servers_onboard_step2')}</strong></div>
-                <pre>{onboarding.compose_snippet}</pre>
+                <div className="row gap-2">
+                  <span className="onboard-step-num">2</span>
+                  <strong>{t('servers_onboard_step2')}</strong>
+                </div>
+                <pre style={{ margin: 0, fontSize: 12 }}>{onboarding.compose_snippet}</pre>
               </div>
+
+              {/* Step 3 — connection status */}
               <div className="stack-sm">
-                <div><strong>{t('servers_onboard_step3')}</strong></div>
-                {checkResult ? (
-                  <div className="text-sm">
-                    {t('server_detail_status')}:{' '}
-                    <Badge tone={checkResult.status === 'online' ? 'success' : 'warn'}>
-                      {t('status_' + checkResult.status, checkResult.status)}
-                    </Badge>
+                <div className="row gap-2">
+                  <span className="onboard-step-num">3</span>
+                  <strong>{t('servers_onboard_step3')}</strong>
+                </div>
+                {isOnline ? (
+                  <div className="row gap-2" style={{ alignItems: 'center' }}>
+                    <span style={{ color: 'var(--success)', fontSize: 18 }}>✓</span>
+                    <Badge tone="success">{t('status_online')}</Badge>
+                    <span className="text-sm text-mute">{t('servers_onboard_connected')}</span>
+                  </div>
+                ) : checkResult ? (
+                  <div className="row gap-2" style={{ alignItems: 'center' }}>
+                    <Badge tone="warn">{t('status_' + checkResult.status, checkResult.status)}</Badge>
+                    <span className="text-sm text-mute">{t('servers_onboard_wait')}</span>
                   </div>
                 ) : (
-                  <div className="text-sm text-mute">{t('servers_onboard_wait')}</div>
+                  <div className="row gap-2" style={{ alignItems: 'center' }}>
+                    {polling && <PollDot />}
+                    <span className="text-sm text-mute">
+                      {polling ? t('servers_onboard_polling') : t('servers_onboard_wait')}
+                    </span>
+                  </div>
                 )}
               </div>
             </div>
+
+            {/* Polling status bar */}
+            {polling && !isOnline && (
+              <div className="onboard-poll-bar">
+                <div className="onboard-poll-fill" />
+              </div>
+            )}
+
             <div className="text-xs text-mute">
               {t('servers_onboard_hint')} → <Link to="/configs">{t('nav_configs')}</Link>
             </div>

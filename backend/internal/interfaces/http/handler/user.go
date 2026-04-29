@@ -79,3 +79,34 @@ func (h *UserHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// Patch — PATCH /api/v1/users/{id}
+// Принимает {"disabled": bool} — блокирует/разблокирует пользователя.
+func (h *UserHandler) Patch(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, domain.ErrValidation)
+		return
+	}
+	var body struct {
+		Disabled *bool `json:"disabled"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if body.Disabled == nil {
+		writeErr(w, domain.ErrValidation)
+		return
+	}
+	if err := h.svc.Disable(r.Context(), id, *body.Disabled); err != nil {
+		writeErr(w, err)
+		return
+	}
+	u, err := h.svc.Get(r.Context(), id)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dto.UserFromDomain(u))
+}

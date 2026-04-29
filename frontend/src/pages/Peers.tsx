@@ -1,43 +1,100 @@
 import { useEffect, useMemo, useState } from 'react'
-import { QRCodeSVG } from 'qrcode.react'
 import { api, ApiError } from '../api/client'
 import type { CreatePeerResponse, Peer, Server } from '../types'
 import {
-  Badge, Button, ConfirmDialog, Empty, IconButton, Input, Modal, Select,
-  Skeleton, copyToClipboard, downloadFile, toast,
+  Button, ConfirmDialog, Empty, Input, Modal, Skeleton, toast,
 } from '../components/ui'
-import { formatBytes, formatRelative, maskKey } from '../lib/format'
+import { useI18n } from '../i18n'
+import { formatBytes, formatRelative } from '../lib/format'
 
+/* ── Traffic bar ─────────────────────────────────────────── */
+function TrafficBar({ rx, tx }: { rx: number; tx: number }) {
+  const total = rx + tx
+  // Soft cap at 50 GB for bar width
+  const CAP = 50 * 1024 ** 3
+  const pct = Math.min((total / CAP) * 100, 100)
+  const tone = pct > 90 ? 'danger' : pct > 65 ? 'warn' : ''
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 100 }}>
+      <div className="traffic-bar">
+        <div className={`traffic-fill${tone ? ` ${tone}` : ''}`} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="traffic-label">
+        ↓{formatBytes(rx)} ↑{formatBytes(tx)}
+      </div>
+    </div>
+  )
+}
+
+/* ── QR modal ────────────────────────────────────────────── */
+function QRModal({ config, onClose }: { config: string; onClose: () => void }) {
+  const { t } = useI18n()
+  return (
+    <Modal open onClose={onClose} title="QR-код" footer={
+      <Button variant="primary" onClick={onClose}>{t('action_cancel')}</Button>
+    }>
+      <div style={{ textAlign: 'center', padding: '8px 0' }}>
+        <img
+          src={`https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(config)}&size=260x260&color=ffffff&bgcolor=131325`}
+          alt="QR"
+          width={260}
+          height={260}
+          style={{ borderRadius: 8 }}
+        />
+        <div className="text-xs text-mute" style={{ marginTop: 8 }}>
+          Отсканируйте в мобильном клиенте
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/* ── Peers page ──────────────────────────────────────────── */
 export default function Peers() {
-  const [peers, setPeers] = useState<Peer[] | null>(null)
-  const [servers, setServers] = useState<Server[]>([])
-  const [search, setSearch] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [name, setName] = useState('')
-  const [serverID, setServerID] = useState('')
+  const { t } = useI18n()
+
+  const [peers,      setPeers]      = useState<Peer[] | null>(null)
+  const [servers,    setServers]    = useState<Server[]>([])
+  const [search,     setSearch]     = useState('')
+  const [creating,   setCreating]   = useState(false)
+  const [name,       setName]       = useState('')
+  const [serverID,   setServerID]   = useState('')
   const [createBusy, setCreateBusy] = useState(false)
-  const [createErr, setCreateErr] = useState<string | null>(null)
-  const [recent, setRecent] = useState<CreatePeerResponse | null>(null)
-  const [confirm, setConfirm] = useState<Peer | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [view, setView] = useState<{ peer: Peer; config: string } | null>(null)
-  const readyServers = useMemo(() => servers.filter((s) => s.protocol && s.protocol !== 'none'), [servers])
+  const [createErr,  setCreateErr]  = useState<string | null>(null)
+  const [recent,     setRecent]     = useState<CreatePeerResponse | null>(null)
+  const [confirm,    setConfirm]    = useState<Peer | null>(null)
+  const [delBusy,    setDelBusy]    = useState(false)
+  const [toggling,   setToggling]   = useState<string | null>(null)
+  const [qrConfig,   setQrConfig]   = useState<string | null>(null)
+
+  const readyServers = useMemo(
+    () => servers.filter((s) => s.protocol && s.protocol !== 'none'),
+    [servers],
+  )
+
+  const serverMap = useMemo(
+    () => Object.fromEntries(servers.map((s) => [s.id, s])),
+    [servers],
+  )
 
   async function reload() {
     try {
-      const [p, s] = await Promise.all([api.peers.list(), api.servers.list().catch(() => [])])
+      const [p, s] = await Promise.all([
+        api.peers.list(),
+        api.servers.list().catch(() => []),
+      ])
       setPeers(p)
       setServers(s as Server[])
       if (!serverID && (s as Server[]).length) {
-        const firstReady = (s as Server[]).find((srv) => srv.protocol && srv.protocol !== 'none')
-        if (firstReady) setServerID(firstReady.id)
+        const first = (s as Server[]).find((srv) => srv.protocol && srv.protocol !== 'none')
+        if (first) setServerID(first.id)
       }
     } catch (e) {
       toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'load failed')
     }
   }
 
-  useEffect(() => { reload() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [])
+  useEffect(() => { reload() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const filtered = useMemo(() => {
     if (!peers) return null
@@ -45,8 +102,7 @@ export default function Peers() {
     if (!q) return peers
     return peers.filter((p) =>
       p.name.toLowerCase().includes(q) ||
-      (p.assigned_ip ?? '').toLowerCase().includes(q) ||
-      (p.public_key ?? '').toLowerCase().includes(q),
+      (p.assigned_ip ?? '').toLowerCase().includes(q),
     )
   }, [peers, search])
 
@@ -56,17 +112,12 @@ export default function Peers() {
     setCreateErr(null)
     setCreateBusy(true)
     try {
-      const srv = servers.find((s) => s.id === serverID)
-      const resp = await api.peers.create(
-        serverID,
-        name.trim(),
-        srv?.protocol === 'xray' ? undefined : (await ensurePeerKeyPair()),
-      )
+      const resp = await api.peers.create(serverID, name.trim())
       setRecent(resp)
       setName('')
       setCreating(false)
       await reload()
-      toast.success('Client created')
+      toast.success(t('toast_peer_created'))
     } catch (err) {
       setCreateErr(err instanceof ApiError ? (err.code ?? `HTTP ${err.status}`) : 'create failed')
     } finally {
@@ -74,32 +125,54 @@ export default function Peers() {
     }
   }
 
-  // Placeholder: full browser X25519 generation can be wired in invite-flow.
-  async function ensurePeerKeyPair(): Promise<string> {
-    return 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
-  }
-
-  async function revoke() {
+  async function remove() {
     if (!confirm) return
-    setBusy(true)
+    setDelBusy(true)
     try {
       await api.peers.delete(confirm.id)
-      toast.success('Client revoked')
+      toast.success(t('toast_peer_deleted'))
       setConfirm(null)
       await reload()
-    } catch (err) {
-      toast.error(err instanceof ApiError ? (err.code ?? `HTTP ${err.status}`) : 'delete failed')
+    } catch (e) {
+      toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'delete failed')
     } finally {
-      setBusy(false)
+      setDelBusy(false)
     }
   }
 
-  async function showConfig(p: Peer) {
+  async function togglePeer(p: Peer) {
+    setToggling(p.id)
+    try {
+      await api.peers.toggle(p.id, !p.enabled)
+      await reload()
+    } catch (e) {
+      toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'toggle failed')
+    } finally {
+      setToggling(null)
+    }
+  }
+
+  async function downloadConfig(p: Peer) {
     try {
       const cfg = await api.peers.config(p.id)
-      setView({ peer: p, config: cfg })
-    } catch (err) {
-      toast.error(err instanceof ApiError ? (err.code ?? `HTTP ${err.status}`) : 'load failed')
+      const blob = new Blob([cfg], { type: 'text/plain' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${p.name}.conf`
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'download failed')
+    }
+  }
+
+  async function showQR(p: Peer) {
+    try {
+      const cfg = await api.peers.config(p.id)
+      setQrConfig(cfg)
+    } catch (e) {
+      toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'qr failed')
     }
   }
 
@@ -107,90 +180,118 @@ export default function Peers() {
     <div className="page">
       <div className="page-header">
         <div>
-          <div className="page-title">Clients</div>
-          <div className="page-sub">Provision client profiles and manage active access.</div>
+          <div className="page-title">{t('peers_title')}</div>
+          <div className="page-sub">{t('peers_sub')}</div>
         </div>
         <div className="row" style={{ flexWrap: 'wrap' }}>
           <input
             className="search-input"
-            placeholder="Search by name, IP, key..."
+            placeholder={t('peers_search')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <Button variant="primary" onClick={() => setCreating(true)} disabled={!readyServers.length}>
-            + New client
+          <Button variant="primary" onClick={() => { setName(''); setCreateErr(null); setCreating(true) }}>
+            {t('peers_add')}
           </Button>
         </div>
       </div>
 
+      {/* Recent peer config */}
       {recent && (
-        <div className="card mb-4" style={{ borderColor: 'rgba(31,157,102,0.35)' }}>
+        <div className="card mb-4">
           <div className="card-header">
             <div>
-              <div className="card-title">Client "{recent.peer.name}" is ready</div>
-              <div className="card-sub">
-                {recent.peer.protocol === 'xray'
-                  ? 'Import this VLESS URI in your Xray client app.'
-                  : 'Save config immediately. Private key is shown only once.'}
-              </div>
+              <div className="card-title">{recent.peer.name}</div>
+              <div className="card-sub text-success">Клиент создан — скачайте конфиг или отсканируйте QR</div>
             </div>
-            <div className="row">
-              <Button onClick={() => copyToClipboard(recent.config, 'Copied')}>Copy</Button>
-              {recent.peer.protocol !== 'xray' && (
-                <Button variant="primary" onClick={() => downloadFile(`${recent.peer.name}.conf`, recent.config)}>
-                  Download .conf
-                </Button>
-              )}
-              <IconButton onClick={() => setRecent(null)} title="Dismiss">x</IconButton>
+            <div className="row" style={{ gap: 8 }}>
+              <Button onClick={() => {
+                const blob = new Blob([recent.config], { type: 'text/plain' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url; a.download = `${recent.peer.name}.conf`; a.click()
+                URL.revokeObjectURL(url)
+              }}>{t('peers_download')}</Button>
+              <Button onClick={() => setQrConfig(recent.config)}>QR</Button>
+              <Button variant="ghost" onClick={() => setRecent(null)}>{t('action_cancel')}</Button>
             </div>
           </div>
-          <div className="row" style={{ alignItems: 'flex-start' }}>
-            <div className="qr-box"><QRCodeSVG value={recent.config} size={180} level="M" /></div>
-            <pre style={{ flex: 1, wordBreak: 'break-all' }}>{recent.config}</pre>
-          </div>
+          <pre style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)', overflowX: 'auto', padding: '8px 0', margin: 0 }}>
+            {recent.config}
+          </pre>
         </div>
       )}
 
       <div className="card">
         {peers === null ? (
-          <div className="stack">{Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} height={42} />)}</div>
+          <div className="stack">
+            {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} height={52} />)}
+          </div>
         ) : filtered && filtered.length === 0 ? (
           <Empty
-            title={search ? 'No clients match your search' : 'No clients yet'}
-            sub={search ? 'Try a different query.' : 'Provision first client to issue config.'}
-            action={!search && readyServers.length > 0 ? <Button variant="primary" onClick={() => setCreating(true)}>+ New client</Button> : undefined}
+            title={search ? t('peers_no_match') : t('peers_empty')}
+            sub={search ? t('peers_no_match_sub') : t('peers_empty_sub')}
+            action={!search ? (
+              <Button variant="primary" onClick={() => setCreating(true)}>{t('peers_add')}</Button>
+            ) : undefined}
           />
         ) : (
           <div className="table-wrap">
             <table className="table">
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>IP</th>
-                  <th>Server</th>
-                  <th>Status</th>
-                  <th>Last handshake</th>
-                  <th>RX / TX</th>
-                  <th>Public key</th>
-                  <th className="actions">Actions</th>
+                  <th>{t('peers_col_client')}</th>
+                  <th>{t('peers_col_server')}</th>
+                  <th>{t('peers_col_traffic')}</th>
+                  <th>{t('peers_col_status')}</th>
+                  <th>{t('peers_col_last_seen')}</th>
+                  <th className="actions">{t('peers_col_actions')}</th>
                 </tr>
               </thead>
               <tbody>
                 {filtered!.map((p) => {
-                  const srv = servers.find((s) => s.id === p.server_id)
+                  const srv = serverMap[p.server_id]
                   return (
                     <tr key={p.id}>
-                      <td><strong>{p.name}</strong></td>
-                      <td><code>{p.assigned_ip ?? '-'}</code></td>
-                      <td>{srv?.name ?? <code>{maskKey(p.server_id)}</code>}</td>
-                      <td>{p.enabled ? <Badge tone="success">enabled</Badge> : <Badge tone="warn">disabled</Badge>}</td>
-                      <td className="text-dim">{formatRelative(p.last_handshake)}</td>
-                      <td className="text-mono text-dim">RX {formatBytes(p.bytes_rx)} / TX {formatBytes(p.bytes_tx)}</td>
-                      <td><code>{maskKey(p.public_key)}</code></td>
+                      <td>
+                        <div style={{ fontWeight: 500 }}>{p.name}</div>
+                        {p.assigned_ip && (
+                          <div className="text-xs text-mute" style={{ fontFamily: 'var(--font-mono)' }}>
+                            {p.assigned_ip}
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        <div className="text-sm">{srv?.name ?? '—'}</div>
+                        {srv?.protocol && srv.protocol !== 'none' && (
+                          <div className="text-xs text-mute">{srv.protocol}</div>
+                        )}
+                      </td>
+                      <td>
+                        <TrafficBar rx={p.bytes_rx} tx={p.bytes_tx} />
+                      </td>
+                      <td>
+                        <label className="toggle">
+                          <input
+                            type="checkbox"
+                            checked={p.enabled}
+                            disabled={toggling === p.id}
+                            onChange={() => togglePeer(p)}
+                          />
+                          <span className="toggle-track" />
+                          <span className="toggle-thumb" />
+                        </label>
+                      </td>
+                      <td className="text-dim text-sm">
+                        {formatRelative(p.last_handshake)}
+                      </td>
                       <td className="actions">
-                        <div className="row-end">
-                          <Button size="sm" onClick={() => showConfig(p)}>Config</Button>
-                          <Button size="sm" variant="danger" onClick={() => setConfirm(p)}>Revoke</Button>
+                        <div className="row-end" style={{ gap: 4 }}>
+                          <Button size="sm" onClick={() => downloadConfig(p)} title={t('peers_download')}>↓</Button>
+                          <Button size="sm" onClick={() => showQR(p)} title="QR">QR</Button>
+                          <Button size="sm" variant="danger" onClick={() => setConfirm(p)}>
+                            {t('peers_delete')}
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -202,72 +303,73 @@ export default function Peers() {
         )}
       </div>
 
+      {/* Create modal */}
       <Modal
         open={creating}
-        onClose={() => setCreating(false)}
-        title="New client"
-        footer={
+        onClose={() => { setCreating(false); setCreateErr(null) }}
+        title={t('peers_modal_title')}
+        footer={(
           <>
-            <Button variant="ghost" onClick={() => setCreating(false)}>Cancel</Button>
-            <Button variant="primary" onClick={create as never} loading={createBusy}>Provision</Button>
+            <Button variant="ghost" onClick={() => { setCreating(false); setCreateErr(null) }}>
+              {t('action_cancel')}
+            </Button>
+            <Button variant="primary" onClick={create as never} loading={createBusy}>
+              {t('action_create')}
+            </Button>
           </>
-        }
+        )}
       >
         <form className="stack" onSubmit={create}>
           <Input
-            label="Name"
-            placeholder="my-iphone"
+            label={t('peers_field_name')}
+            placeholder={t('peers_field_name_ph')}
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
             autoFocus
           />
-          <Select
-            label="Server"
-            value={serverID}
-            onChange={(e) => setServerID(e.target.value)}
-            disabled={!readyServers.length}
-          >
-            {readyServers.map((s) => (
-              <option key={s.id} value={s.id}>{s.name} - {s.endpoint}</option>
-            ))}
-          </Select>
+          {readyServers.length === 0 ? (
+            <div className="state-panel state-warn">
+              <strong>{t('peers_no_servers')}</strong>
+              <div className="text-sm text-mute">{t('peers_no_servers_sub')}</div>
+            </div>
+          ) : (
+            <div className="stack-sm">
+              <label className="label">{t('peers_field_server')}</label>
+              <select
+                className="select"
+                value={serverID}
+                onChange={(e) => setServerID(e.target.value)}
+              >
+                {readyServers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} · {s.protocol}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           {createErr && <div className="text-danger text-sm">{createErr}</div>}
-          {!readyServers.length && <div className="text-warn text-sm">No active configs. Create config in Configs page first.</div>}
         </form>
       </Modal>
 
-      {view && (
-        <Modal
-          open
-          onClose={() => setView(null)}
-          title={`${view.peer.name} - config`}
-          footer={
-            <>
-              <Button onClick={() => copyToClipboard(view.config, 'Config copied')}>Copy</Button>
-              <Button variant="primary" onClick={() => downloadFile(`${view.peer.name}.conf`, view.config)}>Download</Button>
-            </>
-          }
-        >
-          <div className="stack">
-            <div className="row" style={{ justifyContent: 'center' }}>
-              <div className="qr-box"><QRCodeSVG value={view.config} size={220} level="M" /></div>
-            </div>
-            <pre>{view.config}</pre>
-          </div>
-        </Modal>
-      )}
-
+      {/* Delete confirm */}
       <ConfirmDialog
         open={!!confirm}
-        title="Revoke client?"
-        body={<>Client <strong>{confirm?.name}</strong> will be removed from the server.</>}
-        confirmText="Revoke"
+        title={t('peers_delete_title')}
+        body={(
+          <>
+            {t('peers_delete_body')} <strong>{confirm?.name}</strong>
+          </>
+        )}
+        confirmText={t('peers_delete')}
         destructive
-        loading={busy}
-        onConfirm={revoke}
+        loading={delBusy}
+        onConfirm={remove}
         onClose={() => setConfirm(null)}
       />
+
+      {qrConfig && <QRModal config={qrConfig} onClose={() => setQrConfig(null)} />}
     </div>
   )
 }

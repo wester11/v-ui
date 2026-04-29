@@ -13,6 +13,8 @@ import type {
   Stats,
   TokenResponse,
   User,
+  SystemVersionInfo,
+  SystemUpdateResult,
 } from '../types'
 
 export class ApiError extends Error {
@@ -93,6 +95,11 @@ export const api = {
       }),
     delete: (id: string) => request<void>(`/api/v1/peers/${id}`, { method: 'DELETE' }),
     config: (id: string) => request<string>(`/api/v1/peers/${id}/config`),
+    toggle: (id: string, enabled: boolean) =>
+      request<Peer>(`/api/v1/peers/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ enabled }),
+      }),
   },
 
   servers: {
@@ -124,6 +131,11 @@ export const api = {
     create: (body: { email: string; password: string; role: string }) =>
       request<User>('/api/v1/users', { method: 'POST', body: JSON.stringify(body) }),
     delete: (id: string) => request<void>(`/api/v1/users/${id}`, { method: 'DELETE' }),
+    setDisabled: (id: string, disabled: boolean) =>
+      request<User>(`/api/v1/users/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ disabled }),
+      }),
   },
 
   audit: {
@@ -139,4 +151,9 @@ export const api = {
     health: () => request<FleetHealthResult[]>('/api/v1/admin/servers/health'),
     redeployServer: (id: string) => request<void>(`/api/v1/admin/servers/${id}/redeploy`, { method: 'POST' }),
   },
+  system: {
+    version: () => request<SystemVersionInfo>('/api/v1/admin/system/version'),
+    update:  () => request<SystemUpdateResult>('/api/v1/admin/system/update', { method: 'POST' }),
+  },
+
 }

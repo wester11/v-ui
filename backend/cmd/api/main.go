@@ -86,6 +86,7 @@ func main() {
 		Audit:     handler.NewAudit(auditUC),
 		NodeOps:   handler.NewNodeOps(nodeOpsUC, srvUC, auditUC),
 		AgentJobs: handler.NewAgentJobs(jobUC, srvRepo),
+		System:    handler.NewSystem(cfg.InstallDir),
 	})
 
 	srv := &http.Server{
@@ -152,6 +153,7 @@ type config struct {
 	AgentInsecureTLS bool
 	MTLSDir          string
 	PublicBaseURL    string
+	InstallDir       string
 }
 
 func loadConfig() config {
@@ -164,6 +166,7 @@ func loadConfig() config {
 		AgentInsecureTLS: envOr("AGENT_INSECURE_TLS", "false") == "true",
 		MTLSDir:          envOr("MTLS_DIR", "/var/lib/voidwg/agent-ca"),
 		PublicBaseURL:    envOr("PUBLIC_BASE_URL", ""),
+		InstallDir:       envOr("INSTALL_DIR", "/opt/void-wg"),
 	}
 }
 

@@ -166,3 +166,30 @@ func (h *PeerHandler) Health(w http.ResponseWriter, r *http.Request) {
 }
 
 func ptrUUID(u uuid.UUID) *uuid.UUID { return &u }
+
+// Patch — PATCH /api/v1/peers/{id}
+// Принимает {"enabled": bool} — включает/выключает пир.
+func (h *PeerHandler) Patch(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeErr(w, domain.ErrValidation)
+		return
+	}
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	if body.Enabled == nil {
+		writeErr(w, domain.ErrValidation)
+		return
+	}
+	p, err := h.svc.SetEnabled(r.Context(), id, *body.Enabled)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dto.PeerFromDomain(p))
+}

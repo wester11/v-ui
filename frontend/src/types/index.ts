@@ -148,3 +148,15 @@ export interface FleetHealthResult {
   error?: string
 }
 
+export interface SystemVersionInfo {
+  commit: string
+  branch: string
+  built_at: string
+  uptime_seconds: number
+}
+
+export interface SystemUpdateResult {
+  status: 'started' | 'ok' | 'error'
+  message: string
+}
+
