@@ -22,12 +22,23 @@ type Peer struct {
 	XrayShortID   string     // выбран из пула server.XrayConfig.ShortIDs
 	AssignedIP    netip.Addr // только для WG/AWG
 	AllowedIPs    []netip.Prefix
-	Enabled       bool
-	LastHandshake *time.Time
-	BytesRx       uint64
-	BytesTx       uint64
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	Enabled           bool
+	LastHandshake     *time.Time
+	BytesRx           uint64
+	BytesTx           uint64
+	TrafficLimitBytes uint64     // 0 = no limit
+	TrafficLimitedAt  *time.Time // set when auto-disabled by enforcer
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// TrafficUsed returns total bytes consumed by this peer.
+func (p *Peer) TrafficUsed() uint64 { return p.BytesRx + p.BytesTx }
+
+// TrafficLimitExceeded returns true when a limit is set and the peer has
+// consumed at or beyond it.
+func (p *Peer) TrafficLimitExceeded() bool {
+	return p.TrafficLimitBytes > 0 && p.TrafficUsed() >= p.TrafficLimitBytes
 }
 
 func NewWGPeer(userID, serverID uuid.UUID, name, publicKey string) *Peer {

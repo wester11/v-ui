@@ -1,0 +1,33 @@
+services:
+  # Xray-Reality sidecar — handles actual TLS/UDP traffic
+  xray:
+    image: ghcr.io/xtls/xray-core:latest
+    container_name: xray
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./runtime/xray:/etc/xray
+    environment:
+      XRAY_VMESS_AEAD_FORCED: "false"
+
+  # void-wg agent — registers with control panel, rewrites xray config on push
+  agent:
+    image: ghcr.io/wester11/void-wg-node:latest
+    build: ./agent
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - xray
+    volumes:
+      - ./runtime/xray:/etc/xray          # shared with xray container
+    environment:
+      AGENT_PROTOCOL:   "xray"
+      CONTROL_URL:      "${CONTROL_URL:?set in .env}"
+      AGENT_TOKEN:      "${AGENT_TOKEN:?set in .env}"
+      NODE_ID:          "${NODE_ID:?set in .env}"
+      SECRET:           "${SECRET:?set in .env}"
+      HTTP_LISTEN:      "${HTTP_LISTEN:-:7443}"
+      XRAY_CONFIG:      "/etc/xray/config.json"
+      XRAY_CONTAINER:   "xray"
+      XRAY_HEALTH:      "${XRAY_HEALTH:-127.0.0.1:443}"
+      AGENT_VERSION:    "${AGENT_VERSION:-dev}"

@@ -88,10 +88,10 @@ export const api = {
 
   peers: {
     list: () => request<Peer[]>('/api/v1/peers'),
-    create: (server_id: string, name: string, public_key?: string) =>
+    create: (server_id: string, name: string, public_key?: string, traffic_limit_bytes?: number) =>
       request<CreatePeerResponse>('/api/v1/peers', {
         method: 'POST',
-        body: JSON.stringify({ server_id, name, public_key }),
+        body: JSON.stringify({ server_id, name, public_key, traffic_limit_bytes }),
       }),
     delete: (id: string) => request<void>(`/api/v1/peers/${id}`, { method: 'DELETE' }),
     config: (id: string) => request<string>(`/api/v1/peers/${id}/config`),
@@ -99,6 +99,11 @@ export const api = {
       request<Peer>(`/api/v1/peers/${id}`, {
         method: 'PATCH',
         body: JSON.stringify({ enabled }),
+      }),
+    setLimit: (id: string, traffic_limit_bytes: number) =>
+      request<Peer>(`/api/v1/peers/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ traffic_limit_bytes }),
       }),
   },
 
@@ -153,7 +158,7 @@ export const api = {
   },
   system: {
     version: () => request<SystemVersionInfo>('/api/v1/admin/system/version'),
-    update:  () => request<SystemUpdateResult>('/api/v1/admin/system/update', { method: 'POST' }),
+    update: () => request<SystemUpdateResult>('/api/v1/admin/system/update', { method: 'POST' }),
+    updateStream: () => new EventSource('/api/v1/admin/system/update/stream'),
   },
-
 }

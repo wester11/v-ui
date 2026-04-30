@@ -17,6 +17,7 @@ import (
 
 	"github.com/voidwg/agent/internal/awg"
 	"github.com/voidwg/agent/internal/client"
+	"github.com/voidwg/agent/internal/sysstat"
 	"github.com/voidwg/agent/internal/transport"
 	"github.com/voidwg/agent/internal/wg"
 )
@@ -201,8 +202,7 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	// /v1/metrics — агент-side runtime metrics для UI-страницы Server detail.
-	// Сейчас отдаёт минимальный JSON; в будущем — RX/TX, peers online, версии.
+	// /v1/metrics — реальная статистика: система + WG peers + транспорт.
 	mux.HandleFunc("/v1/metrics", func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Agent-Token") != cfg.AgentToken {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -215,6 +215,43 @@ func main() {
 			"agent_version": envOr("AGENT_VERSION", "dev"),
 			"protocol":      cfg.Protocol,
 			"timestamp":     time.Now().UTC().Format(time.RFC3339),
+		}
+		// System stats (CPU load, memory, uptime)
+		if sys, err := sysstat.CollectSystem(); err == nil {
+			out["uptime_seconds"] = sys.UptimeSeconds
+			out["load_avg_1"]     = sys.LoadAvg1
+			out["mem_total_kb"]   = sys.MemTotalKB
+			out["mem_avail_kb"]   = sys.MemAvailKB
+			out["mem_used_pct"]   = sys.MemUsedPct
+		}
+		// WireGuard peer stats (only for WG/AWG transport)
+		if cfg.Protocol == "wireguard" || cfg.Protocol == "amneziawg" || cfg.Protocol == "" {
+			if wgst, err := sysstat.CollectWG(cfg.WGInterface); err == nil {
+				peers := make([]map[string]any, 0, len(wgst.Peers))
+				onlineCount := 0
+				for _, p := range wgst.Peers {
+					pm := map[string]any{
+						"public_key":  p.PublicKey,
+						"endpoint":    p.Endpoint,
+						"allowed_ips": p.AllowedIPs,
+						"rx_bytes":    p.RxBytes,
+						"tx_bytes":    p.TxBytes,
+						"online":      p.Online,
+					}
+					if !p.LastHandshake.IsZero() {
+						pm["last_handshake"] = p.LastHandshake.UTC().Format(time.RFC3339)
+					}
+					peers = append(peers, pm)
+					if p.Online {
+						onlineCount++
+					}
+				}
+				out["wg_peers"]        = peers
+				out["wg_peers_total"]  = len(peers)
+				out["wg_peers_online"] = onlineCount
+				out["wg_public_key"]   = wgst.PublicKey
+				out["wg_listen_port"]  = wgst.ListenPort
+			}
 		}
 		if xt, ok := trans.(*transport.XrayTransport); ok {
 			out["xray_health"] = xt.HealthCheck() == nil

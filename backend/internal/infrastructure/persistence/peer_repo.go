@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/netip"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -30,19 +31,22 @@ func (r *PeerRepo) Create(ctx context.Context, p *domain.Peer) error {
 		INSERT INTO peers
 		    (id,user_id,server_id,protocol,name,public_key,
 		     xray_uuid,xray_flow,xray_short_id,
-		     assigned_ip,enabled,created_at,updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		     assigned_ip,enabled,traffic_limit_bytes,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		p.ID, p.UserID, p.ServerID, string(p.Protocol), p.Name, p.PublicKey,
 		xrayUUID, p.XrayFlow, p.XrayShortID,
-		assigned, p.Enabled, p.CreatedAt, p.UpdatedAt)
+		assigned, p.Enabled, p.TrafficLimitBytes, p.CreatedAt, p.UpdatedAt)
 	return err
 }
 
 func (r *PeerRepo) Update(ctx context.Context, p *domain.Peer) error {
 	_, err := r.db.Exec(ctx, `
-		UPDATE peers SET name=$2,enabled=$3,bytes_rx=$4,bytes_tx=$5,last_handshake=$6,updated_at=NOW()
+		UPDATE peers
+		SET name=$2, enabled=$3, bytes_rx=$4, bytes_tx=$5, last_handshake=$6,
+		    traffic_limit_bytes=$7, traffic_limited_at=$8, updated_at=NOW()
 		WHERE id=$1`,
-		p.ID, p.Name, p.Enabled, p.BytesRx, p.BytesTx, p.LastHandshake)
+		p.ID, p.Name, p.Enabled, p.BytesRx, p.BytesTx, p.LastHandshake,
+		p.TrafficLimitBytes, p.TrafficLimitedAt)
 	return err
 }
 
@@ -67,6 +71,20 @@ func (r *PeerRepo) ListByUser(ctx context.Context, userID uuid.UUID) ([]*domain.
 
 func (r *PeerRepo) ListByServer(ctx context.Context, serverID uuid.UUID) ([]*domain.Peer, error) {
 	rows, err := r.db.Query(ctx, peerSelect+` WHERE server_id=$1`, serverID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPeers(rows)
+}
+
+// ListOverLimit returns all enabled peers that have a traffic limit set and
+// have consumed at or beyond that limit. Used by the traffic enforcer.
+func (r *PeerRepo) ListOverLimit(ctx context.Context) ([]*domain.Peer, error) {
+	rows, err := r.db.Query(ctx, peerSelect+`
+		WHERE enabled = true
+		  AND traffic_limit_bytes > 0
+		  AND (bytes_rx + bytes_tx) >= traffic_limit_bytes`)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +131,9 @@ func (r *PeerRepo) UsedIPs(ctx context.Context, serverID uuid.UUID) ([]string, e
 
 const peerSelect = `SELECT id,user_id,server_id,protocol,name,public_key,
                           xray_uuid,xray_flow,xray_short_id,
-                          assigned_ip,enabled,bytes_rx,bytes_tx,last_handshake,created_at,updated_at FROM peers`
+                          assigned_ip,enabled,bytes_rx,bytes_tx,last_handshake,
+                          traffic_limit_bytes,traffic_limited_at,
+                          created_at,updated_at FROM peers`
 
 func scanPeers(rows pgx.Rows) ([]*domain.Peer, error) {
 	var out []*domain.Peer
@@ -130,11 +150,15 @@ func scanPeers(rows pgx.Rows) ([]*domain.Peer, error) {
 func scanPeer(s scanner) (*domain.Peer, error) {
 	p := &domain.Peer{}
 	var proto string
-	var ip sql.NullString
-	var xrayUUID sql.NullString
-	err := s.Scan(&p.ID, &p.UserID, &p.ServerID, &proto, &p.Name, &p.PublicKey,
+	var ip, xrayUUID sql.NullString
+	var limitedAt *time.Time
+	err := s.Scan(
+		&p.ID, &p.UserID, &p.ServerID, &proto, &p.Name, &p.PublicKey,
 		&xrayUUID, &p.XrayFlow, &p.XrayShortID,
-		&ip, &p.Enabled, &p.BytesRx, &p.BytesTx, &p.LastHandshake, &p.CreatedAt, &p.UpdatedAt)
+		&ip, &p.Enabled, &p.BytesRx, &p.BytesTx, &p.LastHandshake,
+		&p.TrafficLimitBytes, &limitedAt,
+		&p.CreatedAt, &p.UpdatedAt,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
@@ -142,6 +166,7 @@ func scanPeer(s scanner) (*domain.Peer, error) {
 		return nil, err
 	}
 	p.Protocol = domain.Protocol(proto)
+	p.TrafficLimitedAt = limitedAt
 	if xrayUUID.Valid {
 		p.XrayUUID = xrayUUID.String
 	}

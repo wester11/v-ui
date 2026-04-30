@@ -64,38 +64,25 @@ else
   info "Mode         : self-signed (DNS SAN)"
 fi
 
-SSL_CFG="$(mktemp /tmp/void-ssl-XXXX.cnf)"
-cat > "$SSL_CFG" << SSLEOF
-[req]
-prompt             = no
-distinguished_name = dn
-x509_extensions    = san_ext
-
-[dn]
-CN = $PANEL_DOMAIN_RAW
-O  = VoidVPN
-
-[san_ext]
-subjectAltName   = ${SAN_TYPE}:${PANEL_DOMAIN_RAW},DNS:localhost
-keyUsage         = keyEncipherment, dataEncipherment
-extendedKeyUsage = serverAuth
-basicConstraints = CA:FALSE
-SSLEOF
-
 info "Generating RSA-4096 certificate (10 years)..."
+# Use -addext flags (OpenSSL 1.1.1+) — avoids x509_extensions config-file issues on OpenSSL 3.x.
 openssl req -x509 -nodes -newkey rsa:4096 -days 3650 \
     -keyout "$TLS_DIR/privkey.pem" \
     -out    "$TLS_DIR/fullchain.pem" \
-    -config "$SSL_CFG" 2>&1 | tail -3
-rm -f "$SSL_CFG"
+    -subj   "/CN=${PANEL_DOMAIN_RAW}/O=VoidVPN" \
+    -addext "subjectAltName=${SAN_TYPE}:${PANEL_DOMAIN_RAW},DNS:localhost" \
+    -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+    -addext "extendedKeyUsage=serverAuth,clientAuth" \
+    -addext "basicConstraints=critical,CA:FALSE" \
+    2>&1 | tail -3
 chmod 600 "$TLS_DIR/privkey.pem"
 log "Certificate generated"
 
-# Verify SAN
-info "Verifying SAN field..."
-openssl x509 -in "$TLS_DIR/fullchain.pem" -noout -ext subjectAltName 2>/dev/null \
-  && log "SAN verified" \
-  || warn "Could not verify SAN (OpenSSL < 1.1.1 — may still work)"
+# Verify SAN + keyUsage
+info "Verifying certificate extensions..."
+openssl x509 -in "$TLS_DIR/fullchain.pem" -noout -ext subjectAltName,keyUsage 2>/dev/null \
+  && log "Extensions verified (SAN + keyUsage present)" \
+  || warn "Could not verify extensions"
 
 # ── Write nginx HTTPS config ──────────────────────────────
 TPL="$INSTALL_DIR/frontend/nginx.https.conf.tpl"

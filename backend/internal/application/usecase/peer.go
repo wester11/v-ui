@@ -26,10 +26,11 @@ func NewPeerService(p port.PeerRepository, s port.ServerRepository, a port.Agent
 }
 
 type CreatePeerInput struct {
-	UserID    uuid.UUID
-	ServerID  uuid.UUID
-	Name      string
-	PublicKey string // WG/AWG only
+	UserID            uuid.UUID
+	ServerID          uuid.UUID
+	Name              string
+	PublicKey         string // WG/AWG only
+	TrafficLimitBytes uint64 // 0 = no limit
 }
 
 type FleetRedeployResult struct {
@@ -85,6 +86,7 @@ func (s *PeerService) createWG(ctx context.Context, srv *domain.Server, in Creat
 	}
 	peer.AssignedIP = ip
 	peer.AllowedIPs = []netip.Prefix{netip.PrefixFrom(ip, 32)}
+	peer.TrafficLimitBytes = in.TrafficLimitBytes
 
 	if err := s.peers.Create(ctx, peer); err != nil {
 		return nil, "", err
@@ -109,6 +111,7 @@ func (s *PeerService) createXray(ctx context.Context, srv *domain.Server, in Cre
 	}
 
 	peer := domain.NewXrayPeer(in.UserID, in.ServerID, in.Name, vlessUUID, shortID, flow)
+	peer.TrafficLimitBytes = in.TrafficLimitBytes
 	if err := s.peers.Create(ctx, peer); err != nil {
 		return nil, "", err
 	}
@@ -320,6 +323,32 @@ func (s *PeerService) SetEnabled(ctx context.Context, peerID uuid.UUID, enabled 
 		return nil, err
 	}
 	p.Enabled = enabled
+	if err := s.peers.Update(ctx, p); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// SetTrafficLimit — установить или снять лимит трафика на пир.
+// Если limit == 0, лимит снимается и пир включается обратно (если был
+// отключён именно энфорсером). Если лимит уже превышен — пир сразу отключается.
+func (s *PeerService) SetTrafficLimit(ctx context.Context, peerID uuid.UUID, limitBytes uint64) (*domain.Peer, error) {
+	p, err := s.peers.GetByID(ctx, peerID)
+	if err != nil {
+		return nil, err
+	}
+	p.TrafficLimitBytes = limitBytes
+	// снятие лимита — восстановить пир если он был отключён энфорсером
+	if limitBytes == 0 && p.TrafficLimitedAt != nil {
+		p.Enabled = true
+		p.TrafficLimitedAt = nil
+	}
+	// лимит задан и уже превышен — сразу гасим
+	if limitBytes > 0 && p.TrafficLimitExceeded() && p.Enabled {
+		now := time.Now().UTC()
+		p.Enabled = false
+		p.TrafficLimitedAt = &now
+	}
 	if err := s.peers.Update(ctx, p); err != nil {
 		return nil, err
 	}

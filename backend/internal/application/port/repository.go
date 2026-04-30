@@ -32,6 +32,8 @@ type PeerRepository interface {
 	GetByPublicKey(ctx context.Context, pubKey string) (*domain.Peer, error)
 	Count(ctx context.Context) (int, error)
 	TotalTraffic(ctx context.Context) (rx uint64, tx uint64, err error)
+	// ListOverLimit returns enabled peers whose traffic exceeds their limit.
+	ListOverLimit(ctx context.Context) ([]*domain.Peer, error)
 }
 
 // ServerRepository — порт для серверов.

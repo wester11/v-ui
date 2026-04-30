@@ -85,6 +85,8 @@ export interface Peer {
   enabled: boolean
   bytes_rx: number
   bytes_tx: number
+  traffic_limit_bytes: number   // 0 = no limit
+  traffic_limited_at?: string | null
   last_handshake?: string | null
   created_at: string
 }
@@ -155,8 +157,4 @@ export interface SystemVersionInfo {
   uptime_seconds: number
 }
 
-export interface SystemUpdateResult {
-  status: 'started' | 'ok' | 'error'
-  message: string
-}
-
+export interface SystemUpdateResult { success: boolean; message: string }

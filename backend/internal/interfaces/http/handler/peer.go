@@ -31,10 +31,11 @@ func (h *PeerHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	uid := mw.UserIDFromCtx(r.Context())
 	peer, conf, err := h.svc.Create(r.Context(), usecase.CreatePeerInput{
-		UserID:    uid,
-		ServerID:  req.ServerID,
-		Name:      req.Name,
-		PublicKey: req.PublicKey,
+		UserID:            uid,
+		ServerID:          req.ServerID,
+		Name:              req.Name,
+		PublicKey:         req.PublicKey,
+		TrafficLimitBytes: req.TrafficLimitBytes,
 	})
 	if err != nil && peer == nil {
 		writeErr(w, err)
@@ -168,7 +169,8 @@ func (h *PeerHandler) Health(w http.ResponseWriter, r *http.Request) {
 func ptrUUID(u uuid.UUID) *uuid.UUID { return &u }
 
 // Patch — PATCH /api/v1/peers/{id}
-// Принимает {"enabled": bool} — включает/выключает пир.
+// Accepts {"enabled": bool} and/or {"traffic_limit_bytes": uint64}.
+// Both fields are optional but at least one must be present.
 func (h *PeerHandler) Patch(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -176,20 +178,35 @@ func (h *PeerHandler) Patch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Enabled *bool `json:"enabled"`
+		Enabled           *bool   `json:"enabled"`
+		TrafficLimitBytes *uint64 `json:"traffic_limit_bytes"`
 	}
 	if err := decode(r, &body); err != nil {
 		writeErr(w, err)
 		return
 	}
-	if body.Enabled == nil {
+	if body.Enabled == nil && body.TrafficLimitBytes == nil {
 		writeErr(w, domain.ErrValidation)
 		return
 	}
-	p, err := h.svc.SetEnabled(r.Context(), id, *body.Enabled)
-	if err != nil {
-		writeErr(w, err)
-		return
+
+	var peer *domain.Peer
+
+	// apply traffic limit first (may also toggle enabled)
+	if body.TrafficLimitBytes != nil {
+		peer, err = h.svc.SetTrafficLimit(r.Context(), id, *body.TrafficLimitBytes)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
 	}
-	writeJSON(w, http.StatusOK, dto.PeerFromDomain(p))
+	// apply enabled toggle if explicitly provided
+	if body.Enabled != nil {
+		peer, err = h.svc.SetEnabled(r.Context(), id, *body.Enabled)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, dto.PeerFromDomain(peer))
 }

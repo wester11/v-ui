@@ -1,0 +1,11 @@
+[Unit]
+Description=void-wg daily automatic update timer
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=90m
+Persistent=true
+Unit=void-wg-update.service
+
+[Install]
+WantedBy=timers.target

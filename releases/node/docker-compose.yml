@@ -1,0 +1,35 @@
+services:
+  agent:
+    image: ghcr.io/wester11/void-wg-node:latest
+    build: ./agent
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - /lib/modules:/lib/modules:ro
+      - ./runtime/wg:/etc/wireguard
+    environment:
+      AGENT_PROTOCOL:   "${AGENT_PROTOCOL:-amneziawg}"
+      CONTROL_URL:      "${CONTROL_URL:?set in .env}"
+      AGENT_TOKEN:      "${AGENT_TOKEN:?set in .env}"
+      NODE_ID:          "${NODE_ID:?set in .env}"
+      SECRET:           "${SECRET:?set in .env}"
+      WG_IFACE:         "${WG_IFACE:-wg0}"
+      WG_ADDR:          "${WG_ADDR:-127.0.0.1:51820}"
+      OBFS_LISTEN:      "${OBFS_LISTEN:-:51821}"
+      HTTP_LISTEN:      "${HTTP_LISTEN:-:7443}"
+      AWG_JC:           "${AWG_JC:-4}"
+      AWG_JMIN:         "${AWG_JMIN:-40}"
+      AWG_JMAX:         "${AWG_JMAX:-70}"
+      AWG_S1:           "${AWG_S1:-0}"
+      AWG_S2:           "${AWG_S2:-0}"
+      AWG_H1:           "${AWG_H1:-1}"
+      AWG_H2:           "${AWG_H2:-2}"
+      AWG_H3:           "${AWG_H3:-3}"
+      AWG_H4:           "${AWG_H4:-4}"
+      AGENT_VERSION:    "${AGENT_VERSION:-dev}"
+
+volumes:
+  wg_data:

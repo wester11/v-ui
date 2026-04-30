@@ -39,3 +39,30 @@ Thumbs.db
 
 # logs
 *.log
+err.log
+
+# dev-only helper scripts (not part of the project)
+scripts/publish-to-github.sh
+scripts/branch-setup.sh
+scripts/release.sh
+
+# tsconfig build info
+frontend/tsconfig.tsbuildinfo
+
+# redundant legacy docs (content merged into README.md)
+ARCHITECTURE.md
+STRUCTURE.md
+
+# releases mirror — contains copies of source for each git branch
+# (tracked, but exclude their own build artifacts)
+releases/panel/frontend/node_modules/
+releases/panel/frontend/dist/
+releases/panel/frontend/tsconfig.tsbuildinfo
+releases/panel/backend/bin/
+releases/node/agent/bin/
+releases/xray/agent/bin/
+
+# temp test files (can't rm from sandbox)
+releases/panel/.test_write
+releases/panel/README_test.md
+releases/panel/test_write.txt

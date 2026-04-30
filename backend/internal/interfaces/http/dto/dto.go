@@ -199,37 +199,41 @@ type CreateConfigRequest struct {
 // ===== Peer =====
 
 type PeerResponse struct {
-	ID            uuid.UUID  `json:"id"`
-	UserID        uuid.UUID  `json:"user_id"`
-	ServerID      uuid.UUID  `json:"server_id"`
-	Protocol      string     `json:"protocol"`
-	Name          string     `json:"name"`
-	PublicKey     string     `json:"public_key,omitempty"`
-	XrayUUID      string     `json:"xray_uuid,omitempty"`
-	XrayShortID   string     `json:"xray_short_id,omitempty"`
-	AssignedIP    string     `json:"assigned_ip,omitempty"`
-	Enabled       bool       `json:"enabled"`
-	BytesRx       uint64     `json:"bytes_rx"`
-	BytesTx       uint64     `json:"bytes_tx"`
-	LastHandshake *time.Time `json:"last_handshake,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	ID                uuid.UUID  `json:"id"`
+	UserID            uuid.UUID  `json:"user_id"`
+	ServerID          uuid.UUID  `json:"server_id"`
+	Protocol          string     `json:"protocol"`
+	Name              string     `json:"name"`
+	PublicKey         string     `json:"public_key,omitempty"`
+	XrayUUID          string     `json:"xray_uuid,omitempty"`
+	XrayShortID       string     `json:"xray_short_id,omitempty"`
+	AssignedIP        string     `json:"assigned_ip,omitempty"`
+	Enabled           bool       `json:"enabled"`
+	BytesRx           uint64     `json:"bytes_rx"`
+	BytesTx           uint64     `json:"bytes_tx"`
+	TrafficLimitBytes uint64     `json:"traffic_limit_bytes"`
+	TrafficLimitedAt  *time.Time `json:"traffic_limited_at,omitempty"`
+	LastHandshake     *time.Time `json:"last_handshake,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
 }
 
 func PeerFromDomain(p *domain.Peer) PeerResponse {
 	r := PeerResponse{
-		ID:            p.ID,
-		UserID:        p.UserID,
-		ServerID:      p.ServerID,
-		Protocol:      string(p.Protocol),
-		Name:          p.Name,
-		PublicKey:     p.PublicKey,
-		XrayUUID:      p.XrayUUID,
-		XrayShortID:   p.XrayShortID,
-		Enabled:       p.Enabled,
-		BytesRx:       p.BytesRx,
-		BytesTx:       p.BytesTx,
-		LastHandshake: p.LastHandshake,
-		CreatedAt:     p.CreatedAt,
+		ID:                p.ID,
+		UserID:            p.UserID,
+		ServerID:          p.ServerID,
+		Protocol:          string(p.Protocol),
+		Name:              p.Name,
+		PublicKey:         p.PublicKey,
+		XrayUUID:          p.XrayUUID,
+		XrayShortID:       p.XrayShortID,
+		Enabled:           p.Enabled,
+		BytesRx:           p.BytesRx,
+		BytesTx:           p.BytesTx,
+		TrafficLimitBytes: p.TrafficLimitBytes,
+		TrafficLimitedAt:  p.TrafficLimitedAt,
+		LastHandshake:     p.LastHandshake,
+		CreatedAt:         p.CreatedAt,
 	}
 	if p.AssignedIP.IsValid() {
 		r.AssignedIP = p.AssignedIP.String()
@@ -238,9 +242,10 @@ func PeerFromDomain(p *domain.Peer) PeerResponse {
 }
 
 type CreatePeerRequest struct {
-	ServerID  uuid.UUID `json:"server_id"`
-	Name      string    `json:"name"`
-	PublicKey string    `json:"public_key,omitempty"`
+	ServerID          uuid.UUID `json:"server_id"`
+	Name              string    `json:"name"`
+	PublicKey         string    `json:"public_key,omitempty"`
+	TrafficLimitBytes uint64    `json:"traffic_limit_bytes,omitempty"`
 }
 
 type CreatePeerResponse struct {

@@ -1,0 +1,50 @@
+# env / secrets
+.env
+.env.local
+.env.bak
+*.pem
+*.key
+
+# runtime TLS — структура runtime/ остаётся в git через .gitkeep,
+# но сами сертификаты/ключи и acme-challenge не коммитим.
+runtime/tls/*.pem
+runtime/tls/*.key
+runtime/acme-www/.well-known/
+runtime/agent-ca/*
+!runtime/agent-ca/.gitkeep
+
+# build artifacts
+backend/bin/
+backend/api-bin
+agent/bin/
+agent/agent-bin
+
+# Go
+*.test
+*.out
+vendor/
+
+# Node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# logs
+*.log
+err.log
+
+# dev-only helper scripts (not part of the project)
+scripts/publish-to-github.sh
+scripts/branch-setup.sh
+scripts/release.sh
+
+# tsconfig build info
+frontend/tsconfig.tsbuildinfo

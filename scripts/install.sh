@@ -275,6 +275,7 @@ ensure_env_file() {
     local env_file="$INSTALL_DIR/.env"
     if [ -f "$env_file" ] && grep -q '^BOOTSTRAP_ADMIN_PASSWORD=' "$env_file"; then
         log ".env exists — keeping current credentials"
+        _ENV_EXISTED=1   # signal to TLS chooser: this is a reinstall
         # shellcheck disable=SC1090
         set -a; . "$env_file"; set +a
         return
@@ -330,17 +331,39 @@ resolve_domain() {
 # ===== TLS configuration =====
 
 choose_tls_mode_interactive() {
+    # If TLS_MODE already set AND we detect this is a reinstall (.env existed),
+    # ask if user wants to keep the current cert or reconfigure.
+    if [ -n "$TLS_MODE" ] && [ -n "${_ENV_EXISTED:-}" ]; then
+        printf "\n${BOLD}SSL / TLS${NC} — current mode: ${GREEN}${TLS_MODE}${NC}"
+        [ -n "$PANEL_DOMAIN" ] && printf " (${PANEL_DOMAIN})"
+        printf "\n"
+        printf "  ${BOLD}k)${NC} Keep current certificate  ${BOLD}[default]${NC}\n"
+        printf "  ${BOLD}1)${NC} ${GREEN}Domain (Let's Encrypt)${NC} — trusted cert, auto-renew\n"
+        printf "  ${BOLD}2)${NC} ${GREEN}IP address (self-signed)${NC} — instant, browser warning\n\n"
+        local choice
+        while true; do
+            ask "Select [k/1/2]" choice "k"
+            case "$choice" in
+                k|K|"") log "Keeping TLS_MODE=$TLS_MODE"; return ;;
+                1) TLS_MODE=letsencrypt; PANEL_DOMAIN=""; return ;;
+                2) TLS_MODE=selfsigned;  PANEL_DOMAIN=""; return ;;
+                *) warn "Please enter k, 1 or 2." ;;
+            esac
+        done
+    fi
+
+    # First-time install or TLS_MODE not set: standard choice
     if [ -n "$TLS_MODE" ]; then
         log "TLS_MODE=$TLS_MODE (from env)"
         return
     fi
-    printf "\n${BOLD}SSL setup${NC}\n"
+    printf "\n${BOLD}SSL / TLS setup${NC}\n"
     printf "  ${BOLD}1)${NC} ${GREEN}Domain (Let's Encrypt)${NC}  ${BOLD}[recommended]${NC}\n"
     printf "     - trusted cert, no browser warnings\n"
     printf "     - automatic renewal\n"
     printf "  ${BOLD}2)${NC} ${GREEN}IP address (self-signed)${NC}\n"
-    printf "     - works immediately\n"
-    printf "     - browser warning expected\n\n"
+    printf "     - works immediately, no domain needed\n"
+    printf "     - browser will show a warning (click Advanced → Proceed)\n\n"
 
     local choice
     while true; do
@@ -478,34 +501,17 @@ generate_selfsigned() {
     local tls_dir="$INSTALL_DIR/runtime/tls"
     mkdir -p "$tls_dir"
     log "Generating self-signed certificate for IP $ip (10 years)..."
-    # Use config file approach — works on all OpenSSL versions (1.0+)
-    local ssl_cfg
-    ssl_cfg="$(mktemp /tmp/void-ssl-XXXX.cnf)"
-    cat > "$ssl_cfg" << SSLEOF
-[req]
-prompt             = no
-distinguished_name = dn
-x509_extensions    = san_ext
-
-[dn]
-CN = $ip
-
-[san_ext]
-subjectAltName  = @alt_names
-keyUsage        = keyEncipherment, dataEncipherment
-extendedKeyUsage = serverAuth
-basicConstraints = CA:FALSE
-
-[alt_names]
-IP.1  = $ip
-DNS.1 = localhost
-SSLEOF
+    # Use -addext flags (OpenSSL 1.1.1+) — more reliable than config file on OpenSSL 3.x.
+    # Explicit -extensions flag is omitted intentionally; -addext is processed directly by CLI.
     openssl req -x509 -nodes -newkey rsa:4096 -days 3650 \
         -keyout "$tls_dir/privkey.pem" \
         -out    "$tls_dir/fullchain.pem" \
-        -config "$ssl_cfg" \
+        -subj   "/CN=${ip}/O=VoidVPN" \
+        -addext "subjectAltName=IP:${ip},DNS:localhost" \
+        -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+        -addext "extendedKeyUsage=serverAuth,clientAuth" \
+        -addext "basicConstraints=critical,CA:FALSE" \
         >>"$LOG_FILE" 2>&1
-    rm -f "$ssl_cfg"
     chmod 600 "$tls_dir/privkey.pem"
     PANEL_DOMAIN="$ip"
     ok "Self-signed certificate created (IP SAN: $ip)"
