@@ -2,6 +2,8 @@
 
 Canonical repo: [wester11/v-ui](https://github.com/wester11/v-ui)
 
+[![CI](https://github.com/wester11/v-ui/actions/workflows/ci.yml/badge.svg)](https://github.com/wester11/v-ui/actions/workflows/ci.yml)
+
 Production SaaS-style VPN panel for Xray, WireGuard, and AmneziaWG with separated control-plane and node onboarding flow.
 
 ## Repository Organization
@@ -17,6 +19,11 @@ Quick map:
 - `node` -> `releases/node/`
 
 See `RELEASES.md` for exact file-level scope.
+
+## Project Standards
+
+- Contribution flow: `CONTRIBUTING.md`
+- Security disclosure: `SECURITY.md`
 
 ## Overview
 
@@ -171,4 +178,3 @@ If node is not online:
 1. Verify install command parameters (`control-url`, `node-id`, `secret`)
 2. Check node container logs on VPS
 3. Click `Check connection` in server onboarding modal
-
