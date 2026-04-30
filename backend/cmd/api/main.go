@@ -121,7 +121,7 @@ func main() {
 	}()
 
 	// Background: traffic enforcer — disables peers that exceed their limit.
-	trafficEnforcer := usecase.NewTrafficEnforcer(peerRepo, auditUC, &log)
+	trafficEnforcer := usecase.NewTrafficEnforcer(peerRepo, auditUC, log)
 	go trafficEnforcer.Run(ctx)
 
 	// Background monitor: серверы без heartbeat'а >60s помечаются offline.
