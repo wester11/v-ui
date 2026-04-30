@@ -77,7 +77,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install deps
-        run: npm ci --no-audit --no-fund
+        run: npm install --no-audit --no-fund
         env:
           npm_config_fetch_retries: "5"
           npm_config_fetch_retry_factor: "2"
