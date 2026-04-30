@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - panel
+      - xray
+      - node
+  push:
+    branches:
+      - main
+      - panel
+      - xray
+      - node
+
+permissions:
+  contents: read
+
+jobs:
+  backend-go:
+    name: Backend Go
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Verify build and tests
+        run: |
+          go mod download
+          go test ./...
+
+  agent-go:
+    name: Agent Go
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: agent/go.mod
+
+      - name: Verify build and tests
+        run: |
+          go mod tidy
+          go test ./...
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.12.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        run: npm install --no-audit --no-fund
+        env:
+          npm_config_fetch_retries: "5"
+          npm_config_fetch_retry_factor: "2"
+          npm_config_fetch_retry_maxtimeout: "120000"
+
+      - name: Build
+        run: npm run build
