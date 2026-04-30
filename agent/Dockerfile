@@ -1,8 +1,10 @@
 FROM golang:1.22-alpine AS build
 WORKDIR /src
-COPY go.mod go.sum* ./
-RUN go mod download || true
+# Copy everything first — go mod tidy needs source to resolve imports
 COPY . .
+# go mod tidy generates go.sum if missing, downloads all deps
+RUN go mod tidy
+# Build the agent binary
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/agent ./cmd/agent
 
 FROM alpine:3.19
