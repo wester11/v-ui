@@ -167,58 +167,9 @@ func (h *ServerHandler) Check(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// InstallNodeScript отдаёт скрипт установки агента на новый VPS.
-//
-// Скрипт:
-//   1) ставит docker
-//   2) git-clone'ит репозиторий (REPO_URL env override, default из install-time)
-//   3) docker build -t void/node:latest agent/
-//   4) docker compose up -d с CONTROL_URL/NODE_ID/SECRET переданными как ENV
-//
-// Идемпотентен: повторный run пересобирает образ.
-func (h *ServerHandler) InstallNodeScript(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(nodeInstallScript))
+// InstallNodeScript — редирект на актуальную версию скрипта на GitHub.
+// Скрипт больше не встроен в бинарник: это упрощает обновление без rebuild.
+func (h *ServerHandler) InstallNodeScript(w http.ResponseWriter, r *http.Request) {
+	const githubScriptURL = "https://raw.githubusercontent.com/wester11/v-ui/main/scripts/install-node.sh"
+	http.Redirect(w, r, githubScriptURL, http.StatusFound)
 }
-
-const nodeInstallScript = `#!/usr/bin/env bash
-# void-wg node installer.
-#
-# Запускается с --control-url=<url> --node-id=<uuid> --secret=<hex>.
-# Этот скрипт ОТДАЁТСЯ control-plane'ом по адресу /install-node.sh
-# и встроен в backend как const nodeInstallScript.
-#
-# Логика:
-#   1) проверка root + установка docker / docker compose
-#   2) скачивание исходников агента из <CONTROL_URL>/static/agent.tar.gz
-#      (control-plane отдаёт публично; альтернатива — клонировать репозиторий)
-#   3) локальный docker build → image void/node:latest
-#   4) генерация /opt/void-node/docker-compose.yml
-#   5) docker compose up -d
-#
-# Идемпотентен: повторный запуск пересобирает образ с актуальным кодом.
-set -Eeuo pipefail
-
-CONTROL_URL=""
-NODE_ID=""
-SECRET=""
-NODE_VERSION="${NODE_VERSION:-latest}"
-NODE_INSTALL_DIR="${NODE_INSTALL_DIR:-/opt/void-node}"
-# REPO_URL — откуда тянуть исходники. По умолчанию резолвим из control-plane'а
-# (репозиторий должен совпадать с тем, откуда установлена сама панель).
-REPO_URL="${REPO_URL:-https://github.com/wester11/v-ui.git}"
-REPO_BRANCH="${REPO_BRANCH:-main}"
-
-for arg in "$@"; do
-  case "$arg" in
-    --control-url=*) CONTROL_URL="${arg#*=}" ;;
-    --node-id=*)     NODE_ID="${arg#*=}" ;;
-    --secret=*)      SECRET="${arg#*=}" ;;
-    --repo=*)        REPO_URL="${arg#*=}" ;;
-    --branch=*)      REPO_BRANCH="${arg#*=}" ;;
-  esac
-done
-
-# Pretty-печать
-G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; N`

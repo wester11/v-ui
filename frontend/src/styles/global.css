@@ -1384,3 +1384,475 @@ code:not(pre code) {
   70%  { box-shadow: 0 0 0 6px rgba(34,197,94,0); }
   100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
 }
+
+/* ── Onboarding new elements ────────────────────────────────────────────────── */
+.onboard-hint-box {
+  padding: 10px 14px;
+  background: rgba(124,58,237,0.08);
+  border: 1px solid rgba(124,58,237,0.22);
+  border-radius: var(--radius-sm);
+  line-height: 1.5;
+}
+.onboard-run-box {
+  display: flex;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   DEPTH PASS  — visual upgrade: glow, glass, layering, hierarchy
+   Overrides base styles below. Keep all class names identical.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Background — ambient radial glow (stronger) ─────────────────────── */
+body {
+  background:
+    radial-gradient(ellipse 80% 50% at 95% -10%, rgba(124,58,237,0.18) 0%, transparent 55%),
+    radial-gradient(ellipse 60% 40% at -5% 100%, rgba(139,92,246,0.10) 0%, transparent 50%),
+    #080810;
+}
+
+/* Extra ambient layer behind main content */
+.main::before {
+  content: '';
+  position: fixed;
+  top: 0; left: var(--sidebar-w); right: 0; bottom: 0;
+  background:
+    radial-gradient(ellipse 50% 60% at 85% 15%, rgba(124,58,237,0.07) 0%, transparent 60%);
+  pointer-events: none;
+  z-index: 0;
+}
+.main > * { position: relative; z-index: 1; }
+
+/* ── 2. Design token overrides ───────────────────────────────────────────── */
+:root {
+  --bg:            #080810;
+  --bg-elev:       #0d0d1a;
+  --surface:       rgba(255,255,255,0.025);
+  --surface-1:     rgba(255,255,255,0.025);
+  --surface-2:     rgba(255,255,255,0.04);
+  --border:        rgba(255,255,255,0.055);
+  --border-strong: rgba(255,255,255,0.10);
+
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
+  --shadow:    0 4px 24px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.04) inset;
+  --shadow-lg: 0 16px 48px rgba(0,0,0,0.6), 0 1px 0 rgba(255,255,255,0.05) inset;
+  --glow-violet: 0 0 28px rgba(124,58,237,0.35), 0 0 8px rgba(124,58,237,0.2);
+  --glow-sm:   0 0 16px rgba(124,58,237,0.2);
+  --transition: 160ms cubic-bezier(.4, 0, .2, 1);
+}
+
+/* ── 3. Sidebar — glass panel with blur ─────────────────────────────────── */
+.sidebar {
+  background: rgba(8,8,16,0.85);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border-right: 1px solid rgba(255,255,255,0.06);
+  box-shadow: 1px 0 0 rgba(255,255,255,0.03);
+}
+.sidebar-brand {
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  background: transparent;
+}
+.sidebar-footer {
+  border-top: 1px solid rgba(255,255,255,0.05);
+  background: transparent;
+}
+
+/* Nav items */
+.nav-item {
+  position: relative;
+  transition: background var(--transition), color var(--transition), box-shadow var(--transition);
+  border-radius: 10px;
+}
+.nav-item:hover {
+  background: rgba(124,58,237,0.10);
+  color: var(--text);
+  text-decoration: none;
+}
+.nav-item.active {
+  background: linear-gradient(90deg, rgba(124,58,237,0.22) 0%, rgba(124,58,237,0.06) 100%);
+  color: #c4b5fd;
+  box-shadow: inset 0 0 0 1px rgba(124,58,237,0.20), 0 0 16px rgba(124,58,237,0.08);
+}
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 6px; bottom: 6px;
+  width: 3px;
+  background: linear-gradient(180deg, #a78bfa, #7c3aed);
+  border-radius: 0 2px 2px 0;
+  box-shadow: 0 0 8px rgba(167,139,250,0.6);
+}
+
+/* Sub-nav items */
+.nav-sub .nav-item.active {
+  background: rgba(124,58,237,0.12);
+}
+.nav-sub {
+  border-left: 1px solid rgba(124,58,237,0.18);
+}
+
+/* ── 4. Topbar — glass ───────────────────────────────────────────────────── */
+.topbar {
+  background: rgba(8,8,16,0.80);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  border-bottom: 1px solid rgba(255,255,255,0.055);
+}
+.topbar-title { color: rgba(255,255,255,0.92); }
+
+/* ── 5. Cards — glass surfaces with depth ──────────────────────────────── */
+.card {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 16px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.04) inset,
+    0 4px 20px rgba(0,0,0,0.35);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+.card:hover {
+  border-color: rgba(124,58,237,0.18);
+}
+.card-header {
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  padding-bottom: 16px;
+  margin-bottom: 18px;
+}
+
+/* ── 6. Metric cards — premium feel ───────────────────────────────────────── */
+.metric-card {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.045) inset,
+    0 4px 16px rgba(0,0,0,0.3);
+  transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
+}
+.metric-card:hover {
+  border-color: rgba(124,58,237,0.30);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.05) inset,
+    0 0 0 1px rgba(124,58,237,0.12),
+    0 0 32px rgba(124,58,237,0.12),
+    0 8px 28px rgba(0,0,0,0.4);
+  transform: translateY(-2px);
+}
+.metric-value {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  background: linear-gradient(135deg, #ffffff 60%, rgba(255,255,255,0.6));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.metric-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.35);
+  margin-bottom: 6px;
+}
+.metric-icon-wrap {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35), 0 1px 0 rgba(255,255,255,0.12) inset;
+}
+
+/* ── 7. Section title ──────────────────────────────────────────────────────── */
+.dash-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.30);
+  margin-bottom: 12px;
+  margin-top: 4px;
+}
+.dash-section-title::before {
+  background: linear-gradient(180deg, #a78bfa, #7c3aed);
+  box-shadow: 0 0 8px rgba(167,139,250,0.5);
+}
+
+/* ── 8. Buttons — gradient + glow ─────────────────────────────────────────── */
+.btn {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.09);
+  color: rgba(255,255,255,0.75);
+  border-radius: 9px;
+  font-weight: 500;
+  transition: background var(--transition), border-color var(--transition),
+              color var(--transition), box-shadow var(--transition), transform var(--transition);
+}
+.btn:hover {
+  background: rgba(255,255,255,0.07);
+  border-color: rgba(124,58,237,0.35);
+  color: #fff;
+  box-shadow: 0 0 12px rgba(124,58,237,0.12);
+  transform: translateY(-1px);
+}
+.btn:active { transform: translateY(0); }
+
+.btn-primary {
+  background: linear-gradient(135deg, #6d28d9 0%, #7c3aed 50%, #8b5cf6 100%);
+  border-color: rgba(139,92,246,0.4);
+  color: #fff;
+  box-shadow: 0 0 20px rgba(124,58,237,0.30), 0 2px 8px rgba(0,0,0,0.3),
+              0 1px 0 rgba(255,255,255,0.15) inset;
+  font-weight: 600;
+}
+.btn-primary:hover {
+  background: linear-gradient(135deg, #5b21b6 0%, #6d28d9 50%, #7c3aed 100%);
+  border-color: rgba(139,92,246,0.6);
+  box-shadow: 0 0 32px rgba(124,58,237,0.50), 0 4px 16px rgba(0,0,0,0.4),
+              0 1px 0 rgba(255,255,255,0.2) inset;
+  transform: translateY(-1px);
+  filter: none;
+  color: #fff;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: rgba(255,255,255,0.45);
+}
+.btn-ghost:hover {
+  background: rgba(255,255,255,0.05);
+  border-color: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.85);
+  box-shadow: none;
+  transform: none;
+}
+
+.btn-danger {
+  background: rgba(239,68,68,0.08);
+  border-color: rgba(239,68,68,0.25);
+  color: #f87171;
+}
+.btn-danger:hover {
+  background: rgba(239,68,68,0.15);
+  border-color: rgba(239,68,68,0.45);
+  box-shadow: 0 0 16px rgba(239,68,68,0.18);
+  color: #fca5a5;
+}
+
+/* ── 9. Inputs — refined focus ─────────────────────────────────────────── */
+.input, .select, .textarea {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 9px;
+  color: rgba(255,255,255,0.9);
+  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
+}
+.input:hover, .select:hover {
+  border-color: rgba(255,255,255,0.13);
+  background: rgba(255,255,255,0.04);
+}
+.input:focus, .select:focus, .textarea:focus {
+  outline: none;
+  border-color: rgba(124,58,237,0.55);
+  background: rgba(124,58,237,0.05);
+  box-shadow: 0 0 0 3px rgba(124,58,237,0.15), 0 0 16px rgba(124,58,237,0.08);
+}
+.input::placeholder { color: rgba(255,255,255,0.22); }
+
+/* ── 10. Server cards — depth ───────────────────────────────────────────── */
+.server-card {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 4px 16px rgba(0,0,0,0.28);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+  overflow: hidden;
+}
+.server-card:hover {
+  border-color: rgba(124,58,237,0.22);
+  box-shadow: 0 0 24px rgba(124,58,237,0.10), 0 6px 24px rgba(0,0,0,0.4),
+              0 1px 0 rgba(255,255,255,0.05) inset;
+  transform: translateY(-1px);
+}
+
+/* ── 11. Badge ────────────────────────────────────────────────────────────── */
+.badge {
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+}
+.badge-success {
+  background: rgba(34,197,94,0.12);
+  color: #4ade80;
+  border-color: rgba(34,197,94,0.20);
+}
+.badge-warn {
+  background: rgba(245,158,11,0.12);
+  color: #fbbf24;
+  border-color: rgba(245,158,11,0.20);
+}
+.badge-danger {
+  background: rgba(239,68,68,0.12);
+  color: #f87171;
+  border-color: rgba(239,68,68,0.20);
+}
+.badge-violet {
+  background: rgba(124,58,237,0.15);
+  color: #c4b5fd;
+  border-color: rgba(124,58,237,0.25);
+}
+.badge-info {
+  background: rgba(59,130,246,0.12);
+  color: #93c5fd;
+  border-color: rgba(59,130,246,0.20);
+}
+.badge-default {
+  background: rgba(255,255,255,0.05);
+  color: rgba(255,255,255,0.45);
+  border-color: rgba(255,255,255,0.08);
+}
+
+/* ── 12. Table ────────────────────────────────────────────────────────────── */
+.table thead tr {
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.table th {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,0.30);
+  padding: 10px 14px;
+}
+.table td { padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.table tbody tr:hover { background: rgba(124,58,237,0.05); }
+.table tbody tr:last-child td { border-bottom: none; }
+
+/* ── 13. Modal ───────────────────────────────────────────────────────────── */
+.modal-backdrop {
+  background: rgba(0,0,0,0.75);
+  backdrop-filter: blur(6px);
+}
+.modal {
+  background: rgba(13,13,26,0.95);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 18px;
+  box-shadow: 0 0 0 1px rgba(124,58,237,0.08),
+              0 32px 80px rgba(0,0,0,0.65),
+              0 1px 0 rgba(255,255,255,0.06) inset;
+  backdrop-filter: blur(20px);
+}
+.modal-header {
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+/* ── 14. State panel ─────────────────────────────────────────────────────── */
+.state-panel {
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 12px;
+}
+
+/* ── 15. Live badge ──────────────────────────────────────────────────────── */
+.live-badge {
+  background: rgba(34,197,94,0.06);
+  border-color: rgba(34,197,94,0.15);
+  color: rgba(34,197,94,0.7);
+}
+
+/* ── 16. Page header ─────────────────────────────────────────────────────── */
+.page-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  background: linear-gradient(135deg, #ffffff 50%, rgba(167,139,250,0.7));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.page-sub {
+  color: rgba(255,255,255,0.32);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+/* ── 17. Skeleton shimmer ────────────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position:  200% 0; }
+}
+.skeleton, .metric-skeleton {
+  background: linear-gradient(90deg,
+    rgba(255,255,255,0.03) 25%,
+    rgba(255,255,255,0.07) 50%,
+    rgba(255,255,255,0.03) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite;
+  border-radius: 6px;
+}
+
+/* ── 18. Scrollbar ──────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: rgba(124,58,237,0.35); }
+
+/* ── 19. User button ─────────────────────────────────────────────────────── */
+.user-button {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
+}
+.user-button:hover {
+  background: rgba(255,255,255,0.07);
+  border-color: rgba(124,58,237,0.3);
+  box-shadow: 0 0 12px rgba(124,58,237,0.1);
+}
+.user-dropdown {
+  background: rgba(13,13,26,0.97);
+  border: 1px solid rgba(255,255,255,0.08);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 16px 48px rgba(0,0,0,0.6), 0 1px 0 rgba(255,255,255,0.05) inset;
+}
+
+/* ── 20. Page fade-in ──────────────────────────────────────────────────── */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.page {
+  animation: fade-up 220ms ease both;
+}
+
+/* ── 21. Copy field ────────────────────────────────────────────────────── */
+.copy-field {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 9px;
+}
+.copy-field:hover {
+  border-color: rgba(124,58,237,0.25);
+}
+
+/* ── 22. Toggle switch ─────────────────────────────────────────────────── */
+.toggle input:checked ~ .toggle-track {
+  background: linear-gradient(135deg, var(--accent-2), var(--accent));
+  box-shadow: 0 0 10px rgba(124,58,237,0.4);
+}
+.toggle-track {
+  background: rgba(255,255,255,0.10);
+}

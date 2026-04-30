@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -87,9 +88,14 @@ func (s *ServerService) Register(ctx context.Context, in RegisterServerInput) (*
 	}
 
 	controlURL := s.controlURL(endpoint)
-	installURL := strings.TrimSuffix(controlURL, "/") + "/install-node.sh"
-	installCmd := fmt.Sprintf("bash <(curl -Ls %s) --control-url=%s --node-id=%s --secret=%s",
-		shellQuote(installURL), shellQuote(controlURL), shellQuote(server.NodeID.String()), shellQuote(server.NodeSecret))
+
+	// Encode credentials into a single base64 token so the install command is
+	// short and the script is fetched from GitHub (valid SSL — no curl issues).
+	// Format: base64("CONTROL_URL NODE_ID SECRET")
+	rawToken := controlURL + " " + server.NodeID.String() + " " + server.NodeSecret
+	installToken := base64.StdEncoding.EncodeToString([]byte(rawToken))
+	const scriptURL = "https://raw.githubusercontent.com/wester11/v-ui/main/scripts/install-node.sh"
+	installCmd := fmt.Sprintf("bash <(curl -Ls %s) %s", scriptURL, installToken)
 
 	snippet := fmt.Sprintf(`services:
   void-node:
