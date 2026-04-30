@@ -4,6 +4,20 @@ Canonical repo: [wester11/v-ui](https://github.com/wester11/v-ui)
 
 Production SaaS-style VPN panel for Xray, WireGuard, and AmneziaWG with separated control-plane and node onboarding flow.
 
+## Repository Organization
+
+- Default branch: `main`
+- Release branches: `panel`, `xray`, `node`
+- Release bundles live in `releases/<branch-name>/`
+
+Quick map:
+
+- `panel` -> `releases/panel/`
+- `xray` -> `releases/xray/`
+- `node` -> `releases/node/`
+
+See `RELEASES.md` for exact file-level scope.
+
 ## Overview
 
 void-wg now follows Remnawave-like architecture:
