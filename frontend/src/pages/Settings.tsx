@@ -1,23 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../api/client'
 import type { FleetHealthResult, FleetRedeployResult, SystemVersionInfo } from '../types'
 import { Badge, Button, Empty, Skeleton, toast } from '../components/ui'
 import { useI18n } from '../i18n'
 import { formatRelative } from '../lib/format'
 
-function healthTone(status: string): 'success' | 'danger' | 'warn' {
-  if (status === 'online') return 'success'
-  if (status === 'offline') return 'danger'
+function healthTone(s: string): 'success' | 'danger' | 'warn' {
+  if (s === 'online') return 'success'
+  if (s === 'offline') return 'danger'
   return 'warn'
 }
 
-function uptimeStr(seconds: number): string {
-  const d = Math.floor(seconds / 86400)
-  const h = Math.floor((seconds % 86400) / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
+function uptimeStr(s: number): string {
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60)
   if (d > 0) return `${d}д ${h}ч`
   if (h > 0) return `${h}ч ${m}м`
   return `${m}м`
+}
+
+// Strip ANSI color codes from terminal output
+function stripAnsi(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/\x1B\[[0-9;]*[mGKHF]/g, '')
 }
 
 export default function Settings() {
@@ -29,38 +33,70 @@ export default function Settings() {
   const [version,        setVersion]        = useState<SystemVersionInfo | null>(null)
   const [versionLoading, setVersionLoading] = useState(false)
   const [updating,       setUpdating]       = useState(false)
-  const [updateMsg,      setUpdateMsg]      = useState<string | null>(null)
+  const [updateLog,      setUpdateLog]      = useState<string[]>([])
+  const [updateDone,     setUpdateDone]     = useState(false)
+  const logRef = useRef<HTMLDivElement>(null)
+  const esRef  = useRef<EventSource | null>(null)
 
   const loadHealth = async () => {
     setLoading(true)
-    try {
-      setHealth(await api.fleet.health())
-    } catch (e) {
-      toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'health check failed')
-    } finally {
-      setLoading(false)
-    }
+    try { setHealth(await api.fleet.health()) }
+    catch (e) { toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'failed') }
+    finally { setLoading(false) }
   }
 
   const loadVersion = async () => {
     setVersionLoading(true)
-    try {
-      setVersion(await api.system.version())
-    } catch {
-      // version endpoint may not be deployed yet — fail silently
-    } finally {
-      setVersionLoading(false)
+    try { setVersion(await api.system.version()) }
+    catch { /* silent */ }
+    finally { setVersionLoading(false) }
+  }
+
+  useEffect(() => { loadHealth(); loadVersion() }, [])
+
+  // Auto-scroll log to bottom
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [updateLog])
+
+  // Cleanup SSE on unmount
+  useEffect(() => () => esRef.current?.close(), [])
+
+  const startUpdateStream = () => {
+    if (updating) { esRef.current?.close(); return }
+    setUpdating(true)
+    setUpdateDone(false)
+    setUpdateLog([])
+
+    const es = new EventSource('/api/v1/admin/system/update/stream')
+    esRef.current = es
+
+    es.onmessage = (e) => {
+      const line = stripAnsi(e.data)
+      if (line === '__DONE__') {
+        setUpdating(false)
+        setUpdateDone(true)
+        es.close()
+        toast.success(t('settings_update_started'))
+        setTimeout(() => loadVersion(), 3000)
+        return
+      }
+      if (line.startsWith('__ERROR__:')) {
+        setUpdating(false)
+        es.close()
+        toast.error(line.replace('__ERROR__:', ''))
+        return
+      }
+      setUpdateLog((prev) => [...prev, line])
+    }
+    es.onerror = () => {
+      setUpdating(false)
+      es.close()
     }
   }
 
-  useEffect(() => {
-    loadHealth()
-    loadVersion()
-  }, [])
-
   const redeployAll = async () => {
-    setRedeploying(true)
-    setRedeployResult(null)
+    setRedeploying(true); setRedeployResult(null)
     try {
       const result = await api.fleet.redeployAll()
       setRedeployResult(result)
@@ -70,29 +106,7 @@ export default function Settings() {
       await loadHealth()
     } catch (e) {
       toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : t('toast_deploy_fail'))
-    } finally {
-      setRedeploying(false)
-    }
-  }
-
-  const runUpdate = async () => {
-    setUpdating(true)
-    setUpdateMsg(null)
-    try {
-      const res = await api.system.update()
-      setUpdateMsg(res.message)
-      if (res.status === 'error') {
-        toast.error(res.message || t('settings_update_fail'))
-      } else {
-        toast.success(t('settings_update_started'))
-      }
-      // Reload version after a short delay
-      setTimeout(() => loadVersion(), 3000)
-    } catch (e) {
-      toast.error(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : t('settings_update_fail'))
-    } finally {
-      setUpdating(false)
-    }
+    } finally { setRedeploying(false) }
   }
 
   return (
@@ -120,11 +134,8 @@ export default function Settings() {
         </div>
         <div className="row" style={{ gap: 8 }}>
           {(['ru', 'en'] as const).map((loc) => (
-            <button
-              key={loc}
-              onClick={() => setLocale(loc)}
-              className={`btn${locale === loc ? ' btn-primary' : ''}`}
-            >
+            <button key={loc} onClick={() => setLocale(loc)}
+              className={`btn${locale === loc ? ' btn-primary' : ''}`}>
               {loc === 'ru' ? 'Русский' : 'English'}
             </button>
           ))}
@@ -138,16 +149,12 @@ export default function Settings() {
             <div className="card-title">{t('settings_update_title')}</div>
             <div className="card-sub">{t('settings_update_sub')}</div>
           </div>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={runUpdate}
-            loading={updating}
-          >
-            {t('settings_update_btn')}
+          <Button variant="primary" size="sm" onClick={startUpdateStream} loading={updating}>
+            {updating ? t('settings_update_running') : t('settings_update_btn')}
           </Button>
         </div>
 
+        {/* Version info */}
         {versionLoading ? (
           <div className="stack-sm">
             <Skeleton height={14} width="40%" />
@@ -178,9 +185,19 @@ export default function Settings() {
           <div className="text-sm text-mute">{t('settings_ver_unavailable')}</div>
         )}
 
-        {updateMsg && (
-          <div className="update-msg-box">
-            <span className="text-xs" style={{ fontFamily: 'var(--font-mono)' }}>{updateMsg}</span>
+        {/* SSE log terminal */}
+        {(updating || updateLog.length > 0) && (
+          <div className="update-terminal" ref={logRef}>
+            <div className="update-terminal-header">
+              <span className="update-terminal-dot" style={{ background: updating ? 'var(--warning)' : updateDone ? 'var(--success)' : 'var(--danger)' }} />
+              <span className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'rgba(255,255,255,0.4)' }}>
+                {updating ? t('settings_update_running') : updateDone ? t('settings_update_started') : t('settings_update_fail')}
+              </span>
+            </div>
+            {updateLog.map((line, i) => (
+              <div key={i} className="update-terminal-line">{line || ' '}</div>
+            ))}
+            {updating && <div className="update-terminal-cursor" />}
           </div>
         )}
 
@@ -199,32 +216,26 @@ export default function Settings() {
         </div>
         {health === null ? (
           <div className="stack">
-            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} height={38} />)}
+            {[0,1,2].map((i) => <Skeleton key={i} height={38} />)}
           </div>
         ) : health.length === 0 ? (
           <Empty title={t('settings_no_nodes')} sub={t('settings_no_nodes_sub')} />
         ) : (
           <div className="table-wrap">
             <table className="table">
-              <thead>
-                <tr>
-                  <th>{t('settings_col_server')}</th>
-                  <th>{t('settings_col_protocol')}</th>
-                  <th>{t('settings_col_status')}</th>
-                  <th>{t('settings_col_beat')}</th>
-                  <th>{t('settings_col_error')}</th>
-                </tr>
-              </thead>
+              <thead><tr>
+                <th>{t('settings_col_server')}</th>
+                <th>{t('settings_col_protocol')}</th>
+                <th>{t('settings_col_status')}</th>
+                <th>{t('settings_col_beat')}</th>
+                <th>{t('settings_col_error')}</th>
+              </tr></thead>
               <tbody>
                 {health.map((h) => (
                   <tr key={h.server_id}>
                     <td><strong>{h.name}</strong></td>
                     <td>{h.protocol}</td>
-                    <td>
-                      <Badge tone={healthTone(h.status)}>
-                        {t('status_' + h.status, h.status)}
-                      </Badge>
-                    </td>
+                    <td><Badge tone={healthTone(h.status)}>{t('status_' + h.status, h.status)}</Badge></td>
                     <td className="text-dim">{formatRelative(h.last_heartbeat)}</td>
                     <td className="text-danger text-sm">{h.error || '—'}</td>
                   </tr>
@@ -248,23 +259,17 @@ export default function Settings() {
         ) : (
           <div className="table-wrap">
             <table className="table">
-              <thead>
-                <tr>
-                  <th>{t('settings_col_server')}</th>
-                  <th>{t('settings_col_status')}</th>
-                  <th>{t('settings_col_retries')}</th>
-                  <th>{t('settings_col_error')}</th>
-                </tr>
-              </thead>
+              <thead><tr>
+                <th>{t('settings_col_server')}</th>
+                <th>{t('settings_col_status')}</th>
+                <th>{t('settings_col_retries')}</th>
+                <th>{t('settings_col_error')}</th>
+              </tr></thead>
               <tbody>
                 {redeployResult.map((r) => (
                   <tr key={r.server_id}>
                     <td>{r.name}</td>
-                    <td>
-                      <Badge tone={r.status === 'ok' ? 'success' : 'danger'}>
-                        {r.status}
-                      </Badge>
-                    </td>
+                    <td><Badge tone={r.status === 'ok' ? 'success' : 'danger'}>{r.status}</Badge></td>
                     <td>{r.retries}</td>
                     <td className="text-danger text-sm">{r.error || '—'}</td>
                   </tr>

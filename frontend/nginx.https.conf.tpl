@@ -51,6 +51,20 @@ server {
         return 302 /;
     }
 
+    # SSE endpoint — needs long timeout + no buffering
+    location = /api/v1/admin/system/update/stream {
+        if ($http_cookie !~* "(^|;\\s*)panel_auth=__PANEL_ENTRY_TOKEN__(;|$)") { return 404; }
+        proxy_pass http://$api_upstream;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 3600s;
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding on;
+    }
+
     location /api/ {
         if ($http_cookie !~* "(^|;\\s*)panel_auth=__PANEL_ENTRY_TOKEN__(;|$)") { return 404; }
         proxy_pass http://$api_upstream;
@@ -58,7 +72,8 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_read_timeout 60s;
+        proxy_read_timeout 120s;
+        proxy_buffering on;
     }
 
     location = /healthz {

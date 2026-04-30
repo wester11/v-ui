@@ -129,6 +129,7 @@ func NewRouter(d Deps) http.Handler {
 			r.Delete("/api/v1/admin/invites/{id}", d.Invite.Delete)
 			r.Get("/api/v1/admin/system/version", d.System.Version)
 			r.Post("/api/v1/admin/system/update",  d.System.Update)
+			r.Get("/api/v1/admin/system/update/stream", d.System.UpdateStream)
 		})
 
 		r.Group(func(r chi.Router) {

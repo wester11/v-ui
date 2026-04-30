@@ -478,15 +478,37 @@ generate_selfsigned() {
     local tls_dir="$INSTALL_DIR/runtime/tls"
     mkdir -p "$tls_dir"
     log "Generating self-signed certificate for IP $ip (10 years)..."
-    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+    # Use config file approach — works on all OpenSSL versions (1.0+)
+    local ssl_cfg
+    ssl_cfg="$(mktemp /tmp/void-ssl-XXXX.cnf)"
+    cat > "$ssl_cfg" << SSLEOF
+[req]
+prompt             = no
+distinguished_name = dn
+x509_extensions    = san_ext
+
+[dn]
+CN = $ip
+
+[san_ext]
+subjectAltName  = @alt_names
+keyUsage        = keyEncipherment, dataEncipherment
+extendedKeyUsage = serverAuth
+basicConstraints = CA:FALSE
+
+[alt_names]
+IP.1  = $ip
+DNS.1 = localhost
+SSLEOF
+    openssl req -x509 -nodes -newkey rsa:4096 -days 3650 \
         -keyout "$tls_dir/privkey.pem" \
         -out    "$tls_dir/fullchain.pem" \
-        -subj   "/CN=$ip" \
-        -addext "subjectAltName=IP:$ip,DNS:localhost" \
+        -config "$ssl_cfg" \
         >>"$LOG_FILE" 2>&1
+    rm -f "$ssl_cfg"
     chmod 600 "$tls_dir/privkey.pem"
     PANEL_DOMAIN="$ip"
-    ok "Self-signed certificate created"
+    ok "Self-signed certificate created (IP SAN: $ip)"
 }
 
 issue_letsencrypt() {

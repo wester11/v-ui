@@ -1,43 +1,61 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { api, ApiError } from '../api/client'
 import { useAuth } from '../store/auth'
 import { useI18n } from '../i18n'
 import type { Server, Stats } from '../types'
-import { Badge, Button, Empty } from '../components/ui'
+import { Badge, Button } from '../components/ui'
 import { formatBytes, formatNumber, formatRelative } from '../lib/format'
 
-// ─── Metric card (Remnawave-style) ──────────────────────────────────────────
+// ─── Animated counter ────────────────────────────────────────────────────────
+function useCountUp(target: number, duration = 900): number {
+  const [val, setVal] = useState(0)
+  const ref = useRef<number>(0)
+  useEffect(() => {
+    if (target === ref.current) return
+    ref.current = target
+    if (target === 0) { setVal(0); return }
+    const start = performance.now()
+    const from = val
+    const step = (now: number) => {
+      const t = Math.min((now - start) / duration, 1)
+      const ease = 1 - Math.pow(1 - t, 4)
+      setVal(Math.round(from + (target - from) * ease))
+      if (t < 1) requestAnimationFrame(step)
+    }
+    requestAnimationFrame(step)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [target])
+  return val
+}
 
+// ─── MetricCard ───────────────────────────────────────────────────────────────
 function MetricCard({
-  icon, iconBg, label, value, sub, subTone, loading,
+  icon, iconBg, label, value, sub, subTone, loading, index = 0,
 }: {
-  icon: ReactNode
-  iconBg: string
-  label: string
-  value: ReactNode
-  sub?: ReactNode
+  icon: ReactNode; iconBg: string; label: string
+  value: ReactNode; sub?: ReactNode
   subTone?: 'success' | 'warn' | 'danger' | 'mute'
-  loading?: boolean
+  loading?: boolean; index?: number
 }) {
   const subColor =
     subTone === 'success' ? 'var(--success)'
-    : subTone === 'warn'  ? 'var(--warning)'
-    : subTone === 'danger' ? 'var(--danger)'
-    : 'var(--text-mute)'
+    : subTone === 'warn'    ? 'var(--warning)'
+    : subTone === 'danger'  ? 'var(--danger)'
+    : 'rgba(255,255,255,0.28)'
 
   return (
-    <div className="metric-card">
+    <div className="metric-card" style={{ animationDelay: `${index * 60}ms` }}>
       <div className="metric-icon-wrap" style={{ background: iconBg }}>
+        <div className="metric-icon-glow" style={{ background: iconBg }} />
         {icon}
       </div>
       <div className="metric-body">
         <div className="metric-label">{label}</div>
-        {loading ? (
-          <div className="metric-skeleton" />
-        ) : (
-          <div className="metric-value">{value}</div>
-        )}
+        {loading
+          ? <div className="metric-skeleton" />
+          : <div className="metric-value">{value}</div>
+        }
         {sub && !loading && (
           <div className="metric-sub" style={{ color: subColor }}>{sub}</div>
         )}
@@ -46,91 +64,43 @@ function MetricCard({
   )
 }
 
-// ─── Section title ───────────────────────────────────────────────────────────
-
-function SectionTitle({ children }: { children: ReactNode }) {
-  return <div className="dash-section-title">{children}</div>
+// ─── Section title ────────────────────────────────────────────────────────────
+function SectionTitle({ children, right }: { children: ReactNode; right?: ReactNode }) {
+  return (
+    <div className="dash-section-row">
+      <div className="dash-section-title">{children}</div>
+      {right && <div>{right}</div>}
+    </div>
+  )
 }
 
-// ─── SVG icons ───────────────────────────────────────────────────────────────
-
+// ─── Icons ───────────────────────────────────────────────────────────────────
 const IC = {
-  download: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-      <polyline points="7 10 12 15 17 10"/>
-      <line x1="12" y1="15" x2="12" y2="3"/>
-    </svg>
-  ),
-  upload: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-      <polyline points="17 8 12 3 7 8"/>
-      <line x1="12" y1="3" x2="12" y2="15"/>
-    </svg>
-  ),
-  traffic: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-    </svg>
-  ),
-  server: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="2" y="2" width="20" height="8" rx="2"/>
-      <rect x="2" y="14" width="20" height="8" rx="2"/>
-      <line x1="6" y1="6" x2="6.01" y2="6"/>
-      <line x1="6" y1="18" x2="6.01" y2="18"/>
-    </svg>
-  ),
-  users: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-      <circle cx="9" cy="7" r="4"/>
-      <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-    </svg>
-  ),
-  peers: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="18" cy="5" r="3"/>
-      <circle cx="6" cy="12" r="3"/>
-      <circle cx="18" cy="19" r="3"/>
-      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
-      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
-    </svg>
-  ),
-  nodeOnline: (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
-      <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
-      <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
-      <line x1="12" y1="20" x2="12.01" y2="20"/>
-    </svg>
-  ),
+  download: <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
+  upload:   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
+  traffic:  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
+  server:   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>,
+  users:    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+  peers:    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>,
+  wifi:     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>,
 }
-
-// ─── Status tone ─────────────────────────────────────────────────────────────
 
 function statusTone(s: string): 'success' | 'warn' | 'danger' | 'default' {
-  switch (s) {
-    case 'online':               return 'success'
-    case 'pending': case 'drifted': case 'deploying': return 'warn'
-    case 'error':                return 'danger'
-    default:                     return 'default'
-  }
+  if (s === 'online') return 'success'
+  if (s === 'pending' || s === 'drifted' || s === 'deploying') return 'warn'
+  if (s === 'error') return 'danger'
+  return 'default'
 }
 
 // ─── Server card ─────────────────────────────────────────────────────────────
-
 function ServerCard({ server, t }: { server: Server; t: (k: string, fb?: string) => string }) {
-  const status   = server.status ?? (server.online ? 'online' : 'offline')
-  const tone     = statusTone(status)
+  const status = server.status ?? (server.online ? 'online' : 'offline')
+  const tone = statusTone(status)
   const isOnline = server.online
-
   const stripeColor =
     tone === 'success' ? 'var(--success)'
-    : tone === 'danger'  ? 'var(--danger)'
-    : tone === 'warn'    ? 'var(--warning)'
+    : tone === 'danger' ? 'var(--danger)'
+    : tone === 'warn'   ? 'var(--warning)'
     : 'var(--border-strong)'
 
   return (
@@ -150,15 +120,11 @@ function ServerCard({ server, t }: { server: Server; t: (k: string, fb?: string)
           </div>
           <div className="server-card-meta">
             <span className="text-mono text-mute">{server.ip || server.endpoint}</span>
-            {server.hostname && (
-              <span className="text-xs text-mute" style={{ marginLeft: 6 }}>· {server.hostname}</span>
-            )}
+            {server.hostname && <span className="text-xs text-mute" style={{ marginLeft: 6 }}>· {server.hostname}</span>}
           </div>
           <div className="server-card-footer">
             <div className="row gap-2">
-              {server.protocol && server.protocol !== 'none' && (
-                <Badge tone="violet">{server.protocol}</Badge>
-              )}
+              {server.protocol && server.protocol !== 'none' && <Badge tone="violet">{server.protocol}</Badge>}
               {server.mode && <Badge>{server.mode}</Badge>}
             </div>
             <span className="text-xs text-mute">{formatRelative(server.last_heartbeat)}</span>
@@ -169,8 +135,7 @@ function ServerCard({ server, t }: { server: Server; t: (k: string, fb?: string)
   )
 }
 
-// ─── Main dashboard ───────────────────────────────────────────────────────────
-
+// ─── Main ─────────────────────────────────────────────────────────────────────
 export default function Dashboard() {
   const user    = useAuth((s) => s.user)
   const { t }   = useI18n()
@@ -180,22 +145,21 @@ export default function Dashboard() {
   const [servers, setServers] = useState<Server[] | null>(null)
   const [error,   setError]   = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [lastTick, setLastTick] = useState<Date>(new Date())
+  const [lastTick, setLastTick] = useState(new Date())
 
   const load = async () => {
     setError(null)
     setLoading(true)
     try {
-      const tasks: Promise<unknown>[] = []
       if (isStaff) {
-        tasks.push(api.stats.get().then(setStats))
-        tasks.push(api.servers.list().then(setServers))
+        await Promise.all([
+          api.stats.get().then(setStats),
+          api.servers.list().then(setServers),
+        ])
       }
-      await Promise.all(tasks)
       setLastTick(new Date())
     } catch (e) {
-      if (e instanceof ApiError) setError(e.code ?? `HTTP ${e.status}`)
-      else setError('failed to load dashboard')
+      setError(e instanceof ApiError ? (e.code ?? `HTTP ${e.status}`) : 'failed')
     } finally {
       setLoading(false)
     }
@@ -204,24 +168,26 @@ export default function Dashboard() {
   useEffect(() => {
     load()
     if (!isStaff) return
-    const interval = setInterval(load, 15_000)
-    return () => clearInterval(interval)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const iv = setInterval(load, 15_000)
+    return () => clearInterval(iv)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isStaff])
 
-  const degraded = useMemo(
-    () => (servers ?? []).filter((s) => s.online === false).length,
-    [servers],
-  )
+  const degraded  = useMemo(() => (servers ?? []).filter((s) => !s.online).length, [servers])
+  const totalBytes = (stats?.bytes_rx_total ?? 0) + (stats?.bytes_tx_total ?? 0)
+  const onlineN   = stats?.servers_online ?? 0
+  const totalN    = stats?.servers ?? 0
+  const healthy   = totalN > 0 && degraded === 0
 
-  const totalTraffic = (stats?.bytes_rx_total ?? 0) + (stats?.bytes_tx_total ?? 0)
-  const onlineCount  = stats?.servers_online ?? 0
-  const totalCount   = stats?.servers ?? 0
-  const nodesHealthy = totalCount > 0 && degraded === 0
+  // Animated counters
+  const cUsers   = useCountUp(stats?.users         ?? 0)
+  const cPeers   = useCountUp(stats?.peers         ?? 0)
+  const cOnline  = useCountUp(onlineN)
+  const cTotal   = useCountUp(totalN)
 
   return (
     <div className="page">
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="page-header">
         <div>
           <div className="page-title">{t('dashboard_title')}</div>
@@ -263,28 +229,25 @@ export default function Dashboard() {
           {/* ── Трафик ── */}
           <SectionTitle>{t('dashboard_section_traffic')}</SectionTitle>
           <div className="metrics-grid-3 mb-6">
-            <MetricCard
-              loading={loading}
+            <MetricCard index={0} loading={loading}
               icon={IC.traffic}
-              iconBg="linear-gradient(135deg,#7c3aed,#a855f7)"
+              iconBg="linear-gradient(135deg,#6d28d9,#a855f7)"
               label={t('dashboard_traffic_total')}
-              value={formatBytes(totalTraffic)}
+              value={formatBytes(totalBytes)}
               sub={`↓ ${formatBytes(stats?.bytes_rx_total ?? 0)}  ·  ↑ ${formatBytes(stats?.bytes_tx_total ?? 0)}`}
               subTone="mute"
             />
-            <MetricCard
-              loading={loading}
+            <MetricCard index={1} loading={loading}
               icon={IC.download}
-              iconBg="linear-gradient(135deg,#0d9488,#14b8a6)"
+              iconBg="linear-gradient(135deg,#0d9488,#2dd4bf)"
               label={t('dashboard_traffic_rx')}
               value={formatBytes(stats?.bytes_rx_total ?? 0)}
               sub={t('dashboard_traffic_rx_sub')}
               subTone="success"
             />
-            <MetricCard
-              loading={loading}
+            <MetricCard index={2} loading={loading}
               icon={IC.upload}
-              iconBg="linear-gradient(135deg,#0284c7,#38bdf8)"
+              iconBg="linear-gradient(135deg,#0369a1,#38bdf8)"
               label={t('dashboard_traffic_tx')}
               value={formatBytes(stats?.bytes_tx_total ?? 0)}
               sub={t('dashboard_traffic_tx_sub')}
@@ -295,81 +258,84 @@ export default function Dashboard() {
           {/* ── Инфраструктура ── */}
           <SectionTitle>{t('dashboard_section_infra')}</SectionTitle>
           <div className="metrics-grid-4 mb-6">
-            <MetricCard
-              loading={loading}
-              icon={IC.nodeOnline}
-              iconBg={nodesHealthy ? 'linear-gradient(135deg,#16a34a,#22c55e)' : 'linear-gradient(135deg,#b45309,#f59e0b)'}
+            <MetricCard index={0} loading={loading}
+              icon={IC.wifi}
+              iconBg={healthy
+                ? 'linear-gradient(135deg,#15803d,#22c55e)'
+                : 'linear-gradient(135deg,#92400e,#f59e0b)'}
               label={t('dashboard_nodes_online')}
-              value={`${onlineCount} / ${totalCount}`}
+              value={`${cOnline} / ${cTotal}`}
               sub={loading ? undefined : degraded > 0
                 ? t('dashboard_degraded').replace('{n}', String(degraded))
                 : t('dashboard_all_healthy')}
               subTone={degraded > 0 ? 'warn' : 'success'}
             />
-            <MetricCard
-              loading={loading}
+            <MetricCard index={1} loading={loading}
               icon={IC.server}
-              iconBg="linear-gradient(135deg,#475569,#64748b)"
+              iconBg="linear-gradient(135deg,#374151,#6b7280)"
               label={t('dashboard_servers')}
-              value={formatNumber(stats?.servers ?? 0)}
+              value={formatNumber(cTotal)}
               sub={t('dashboard_servers_sub')}
               subTone="mute"
             />
-            <MetricCard
-              loading={loading}
+            <MetricCard index={2} loading={loading}
               icon={IC.peers}
-              iconBg="linear-gradient(135deg,#7c3aed,#8b5cf6)"
+              iconBg="linear-gradient(135deg,#5b21b6,#8b5cf6)"
               label={t('dashboard_clients')}
-              value={formatNumber(stats?.peers ?? 0)}
+              value={formatNumber(cPeers)}
               sub={t('dashboard_clients_sub')}
               subTone="mute"
             />
-            <MetricCard
-              loading={loading}
+            <MetricCard index={3} loading={loading}
               icon={IC.users}
-              iconBg="linear-gradient(135deg,#b45309,#d97706)"
+              iconBg="linear-gradient(135deg,#92400e,#d97706)"
               label={t('dashboard_users')}
-              value={formatNumber(stats?.users ?? 0)}
+              value={formatNumber(cUsers)}
               sub={t('dashboard_users_sub')}
               subTone="mute"
             />
           </div>
 
-          {/* ── Серверы ── */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-            <SectionTitle>{t('dashboard_section_nodes')}</SectionTitle>
+          {/* ── Ноды ── */}
+          <SectionTitle right={
             <div className="row gap-2">
               <Link to="/settings"><Button size="sm">{t('servers_fleet_ops')}</Button></Link>
               <Link to="/servers"><Button size="sm" variant="primary">{t('servers_manage')}</Button></Link>
             </div>
-          </div>
+          }>
+            {t('dashboard_section_nodes')}
+          </SectionTitle>
 
           {loading ? (
             <div className="servers-grid">
-              {Array.from({ length: 3 }).map((_, i) => (
+              {[0,1,2].map((i) => (
                 <div key={i} className="server-card">
                   <div className="server-card-stripe" style={{ background: 'var(--border-strong)' }} />
                   <div className="server-card-body" style={{ gap: 10 }}>
-                    <div className="metric-skeleton" style={{ height: 18 }} />
-                    <div className="metric-skeleton" style={{ height: 14, width: '60%' }} />
-                    <div className="metric-skeleton" style={{ height: 14, width: '40%' }} />
+                    <div className="metric-skeleton" style={{ height: 16 }} />
+                    <div className="metric-skeleton" style={{ height: 13, width: '55%' }} />
+                    <div className="metric-skeleton" style={{ height: 13, width: '35%' }} />
                   </div>
                 </div>
               ))}
             </div>
-          ) : !servers || servers.length === 0 ? (
-            <div className="card">
-              <Empty
-                title={t('dashboard_no_servers')}
-                sub={t('dashboard_no_servers_sub')}
-                action={<Link to="/servers"><Button variant="primary">{t('dashboard_register')}</Button></Link>}
-              />
+          ) : !servers?.length ? (
+            <div className="dash-empty-nodes">
+              <div className="dash-empty-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
+                  <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+                </svg>
+              </div>
+              <div className="dash-empty-title">{t('dashboard_no_servers')}</div>
+              <div className="dash-empty-sub">{t('dashboard_no_servers_sub')}</div>
+              <Link to="/servers">
+                <Button variant="primary">{t('dashboard_register')}</Button>
+              </Link>
             </div>
           ) : (
             <div className="servers-grid">
-              {servers.map((s) => (
-                <ServerCard key={s.id} server={s} t={t} />
-              ))}
+              {servers.map((s) => <ServerCard key={s.id} server={s} t={t} />)}
             </div>
           )}
         </>

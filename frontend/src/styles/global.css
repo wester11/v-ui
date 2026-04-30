@@ -1856,3 +1856,180 @@ body {
 .toggle-track {
   background: rgba(255,255,255,0.10);
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   MEGA VISUAL PASS  — 100x upgrade
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ── 1. Dot grid background ─────────────────────────────────────────────────── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: radial-gradient(circle, rgba(255,255,255,0.028) 1px, transparent 1px);
+  background-size: 28px 28px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ── 2. Metric icon glow halo ───────────────────────────────────────────────── */
+.metric-icon-wrap {
+  position: relative;
+  overflow: visible;
+}
+.metric-icon-glow {
+  position: absolute;
+  inset: -4px;
+  border-radius: 16px;
+  opacity: 0.35;
+  filter: blur(12px);
+  z-index: -1;
+  transition: opacity 200ms ease;
+}
+.metric-card:hover .metric-icon-glow {
+  opacity: 0.6;
+  filter: blur(16px);
+}
+
+/* ── 3. Metric card entrance animation ─────────────────────────────────────── */
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+.metric-card {
+  animation: card-in 320ms ease both;
+}
+
+/* ── 4. Metric value — monospace numbers ────────────────────────────────────── */
+.metric-value {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* ── 5. Section row (title + actions) ──────────────────────────────────────── */
+.dash-section-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  margin-top: 4px;
+}
+.dash-section-row .dash-section-title {
+  margin-bottom: 0;
+  margin-top: 0;
+}
+
+/* ── 6. Dashboard empty nodes state ────────────────────────────────────────── */
+.dash-empty-nodes {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 56px 24px;
+  background: rgba(255,255,255,0.015);
+  border: 1px dashed rgba(124,58,237,0.20);
+  border-radius: 16px;
+  text-align: center;
+  animation: fade-up 300ms ease both;
+}
+.dash-empty-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: rgba(124,58,237,0.10);
+  border: 1px solid rgba(124,58,237,0.18);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(124,58,237,0.7);
+  animation: float 3s ease-in-out infinite;
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-6px); }
+}
+.dash-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.75);
+}
+.dash-empty-sub {
+  font-size: 13px;
+  color: rgba(255,255,255,0.32);
+  max-width: 360px;
+  line-height: 1.5;
+}
+
+/* ── 7. Update terminal ─────────────────────────────────────────────────────── */
+.update-terminal {
+  margin-top: 14px;
+  background: #050508;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.update-terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  background: rgba(255,255,255,0.02);
+  position: sticky;
+  top: 0;
+}
+.update-terminal-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  animation: live-pulse 2s ease-out infinite;
+}
+.update-terminal-line {
+  padding: 1px 14px;
+  color: rgba(255,255,255,0.7);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.update-terminal-line:last-child {
+  padding-bottom: 12px;
+}
+.update-terminal-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  background: var(--accent);
+  margin: 2px 14px 12px;
+  animation: blink 1s step-end infinite;
+  vertical-align: text-bottom;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* ── 8. Card enter stagger ──────────────────────────────────────────────────── */
+.card {
+  animation: card-in 280ms ease both;
+}
+
+/* ── 9. Gradient section divider line ──────────────────────────────────────── */
+.dash-section-title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(124,58,237,0.25), transparent);
+  margin-left: 12px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+/* ── 10. Page title gradient ────────────────────────────────────────────────── */
+.page-header { margin-bottom: 28px; }
+
+/* ── 11. i18n key ───────────────────────────────────────────────────────────── */
+/* settings_update_running is used in Settings.tsx — no CSS needed */
